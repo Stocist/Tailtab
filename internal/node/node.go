@@ -41,11 +41,19 @@ type Node struct {
 
 	cancel context.CancelFunc
 
-	mu      sync.Mutex
-	ts      *tsnet.Server
-	lc      *local.Client
-	started bool
-	st      Status
+	mu sync.Mutex
+	ts *tsnet.Server
+	lc *local.Client
+	// loginRequested records that control has already been asked for an auth
+	// URL for the current NeedsLogin episode. Without it every notification in
+	// that window starts another login session, each with its own URL, of
+	// which the popup would only ever show the last.
+	loginRequested bool
+	// startLogin is lc.StartLoginInteractive once the node is up. It is a
+	// field so tests can drive the login path without a control server.
+	startLogin func(context.Context) error
+	started    bool
+	st         Status
 }
 
 // New returns a Node that calls onChange whenever its status changes.
@@ -136,6 +144,7 @@ func (n *Node) Start(profileID, browser string) error {
 	n.mu.Lock()
 	n.lc = lc
 	n.cancel = cancel
+	n.startLogin = lc.StartLoginInteractive
 	n.mu.Unlock()
 
 	// NotifyInitialStatus is what carries the tailnet name and self IP:
@@ -192,7 +201,7 @@ func (n *Node) watch(ctx context.Context, w *local.IPNBusWatcher) {
 func (n *Node) apply(ctx context.Context, notify ipn.Notify) {
 	var wantLogin bool
 
-	n.update(func(st *Status) {
+	changed := n.update(func(st *Status) {
 		if s := notify.InitialStatus; s != nil {
 			applyIPNStatus(st, s)
 		}
@@ -206,11 +215,15 @@ func (n *Node) apply(ctx context.Context, notify ipn.Notify) {
 		}
 		if notify.BrowseToURL != nil {
 			st.AuthURL = *notify.BrowseToURL
+			n.loginRequested = false // the request was answered
 		}
 		if notify.ErrMessage != nil {
 			st.Error = *notify.ErrMessage
 		}
-		wantLogin = st.State == ipn.NeedsLogin.String() && st.AuthURL == ""
+		if st.State != ipn.NeedsLogin.String() {
+			n.loginRequested = false // a new episode may need a new URL
+		}
+		wantLogin = st.State == ipn.NeedsLogin.String() && st.AuthURL == "" && !n.loginRequested
 	})
 
 	// A state change can also change the tailnet name or the self IP (they are
@@ -220,9 +233,11 @@ func (n *Node) apply(ctx context.Context, notify ipn.Notify) {
 	}
 
 	// NeedsLogin with no URL in hand means nobody has asked control for one:
-	// this is the case on a first run and again after a logout.
-	if wantLogin {
-		if err := n.startLoginInteractive(ctx); err != nil {
+	// this is the case on a first run and again after a logout. Notifications
+	// that changed nothing are ignored, so a quiet stream of prefs and health
+	// updates cannot turn into a stream of login sessions.
+	if changed && wantLogin {
+		if err := n.requestLogin(ctx); err != nil {
 			log.Printf("requesting a login URL: %v", err)
 		}
 	}
@@ -280,17 +295,19 @@ func applyIPNStatus(st *Status, s *ipnstate.Status) {
 
 // update mutates the status under the lock and notifies the extension, but
 // only when something actually changed: the bus is unrate-limited, so most
-// notifications leave the extension-visible status untouched.
-func (n *Node) update(f func(*Status)) {
+// notifications leave the extension-visible status untouched. It reports
+// whether the status changed.
+func (n *Node) update(f func(*Status)) bool {
 	n.mu.Lock()
 	before := n.st
 	f(&n.st)
 	st := n.st
 	n.mu.Unlock()
 	if st == before {
-		return
+		return false
 	}
 	n.onChange(st)
+	return true
 }
 
 // SetWantRunning connects or disconnects the node. Connecting also asks control
@@ -310,7 +327,9 @@ func (n *Node) SetWantRunning(up bool) error {
 		return fmt.Errorf("setting WantRunning=%v: %w", up, err)
 	}
 	if up && n.Status().State == ipn.NeedsLogin.String() {
-		return n.startLoginInteractive(ctx)
+		// A user pressing Connect is always allowed to ask again, even if the
+		// bus already asked for this episode.
+		return n.requestLogin(ctx)
 	}
 	return nil
 }
@@ -324,23 +343,34 @@ func (n *Node) Logout() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	n.update(func(st *Status) { st.AuthURL = "" })
+	n.update(func(st *Status) {
+		st.AuthURL = ""
+		n.loginRequested = false // the next NeedsLogin needs a fresh URL
+	})
 	if err := lc.Logout(ctx); err != nil {
 		return fmt.Errorf("logging out: %w", err)
 	}
 	return nil
 }
 
-// startLoginInteractive asks control for an auth URL. The URL arrives
-// asynchronously on the bus as BrowseToURL.
-func (n *Node) startLoginInteractive(ctx context.Context) error {
-	lc, err := n.client()
-	if err != nil {
-		return err
+// requestLogin asks control for an auth URL, at most once per NeedsLogin
+// episode from the bus. The URL arrives asynchronously as BrowseToURL.
+func (n *Node) requestLogin(ctx context.Context) error {
+	n.mu.Lock()
+	login := n.startLogin
+	if login == nil {
+		n.mu.Unlock()
+		return errors.New("node is not started")
 	}
+	n.loginRequested = true
+	n.mu.Unlock()
+
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	if err := lc.StartLoginInteractive(ctx); err != nil {
+	if err := login(ctx); err != nil {
+		n.mu.Lock()
+		n.loginRequested = false // it did not take; allow another attempt
+		n.mu.Unlock()
 		return fmt.Errorf("starting interactive login: %w", err)
 	}
 	return nil
