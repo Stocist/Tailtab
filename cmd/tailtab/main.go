@@ -2,10 +2,11 @@
 // extension. It gives one browser profile its own Tailscale node via tsnet and
 // exposes it to the browser as a loopback HTTP/SOCKS5 proxy.
 //
-// With no arguments it runs as a native-messaging host, speaking the framed
-// JSON protocol in internal/nm over stdin and stdout. stdout is the protocol
-// channel and nothing else may ever be written there; all output, including
-// the output of the install and uninstall subcommands, goes to stderr.
+// Unless the first argument is one of a short list of subcommands, it runs as
+// a native-messaging host, speaking the framed JSON protocol in internal/nm
+// over stdin and stdout. stdout is the protocol channel and nothing else may
+// ever be written there; all output, including the output of the install and
+// uninstall subcommands, goes to stderr.
 package main
 
 import (
@@ -24,7 +25,45 @@ Usage:
   tailtab install --edge-id <chromium-extension-id> --gecko-id <addon-id>
                              register the native-messaging manifests
   tailtab uninstall          remove the native-messaging manifests
+
+Anything else on the command line means the browser started us, and we run as a
+native-messaging host.
 `
+
+// Modes of the program. Everything that is not one of the named subcommands is
+// host mode, because browsers pass arguments of their own to a native host and
+// none of them is ours to interpret:
+//
+//   - Firefox and Zen pass the manifest path and the calling add-on's ID.
+//   - Chromium and Edge pass the calling extension's origin, and on some
+//     platforms --parent-window=<handle> as well.
+//
+// Treating those as subcommands made the host print usage and exit 2 the
+// instant Zen launched it, which the extension saw as a host that would not
+// stay up.
+const (
+	modeHost      = "host"
+	modeInstall   = "install"
+	modeUninstall = "uninstall"
+	modeHelp      = "help"
+)
+
+// mode picks the mode for a command line.
+func mode(args []string) string {
+	if len(args) == 0 {
+		return modeHost
+	}
+	switch args[0] {
+	case "install":
+		return modeInstall
+	case "uninstall":
+		return modeUninstall
+	case "help", "-h", "--help":
+		return modeHelp
+	default:
+		return modeHost
+	}
+}
 
 func main() {
 	// stdout is the native-messaging wire. Every log line goes to stderr.
@@ -33,23 +72,22 @@ func main() {
 	log.SetPrefix("tailtab: ")
 
 	args := os.Args[1:]
-	if len(args) == 0 {
-		// The browser launches the host with no arguments; the manifest format
-		// has no way to pass any.
-		runHost()
-		return
-	}
 	var err error
-	switch args[0] {
-	case "install":
+	switch mode(args) {
+	case modeInstall:
 		err = runInstall(args[1:])
-	case "uninstall":
+	case modeUninstall:
 		err = runUninstall(args[1:])
-	case "-h", "--help", "help":
+	case modeHelp:
 		fmt.Fprint(os.Stderr, usage)
 	default:
-		fmt.Fprintf(os.Stderr, "tailtab: unknown command %q\n\n%s", args[0], usage)
-		os.Exit(2)
+		// Log what the browser handed us once, so an unexpected launch is
+		// visible in the browser's stderr, then ignore it.
+		if len(args) > 0 {
+			log.Printf("started with %d argument(s) from the browser: %q", len(args), args)
+		}
+		runHost()
+		return
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "tailtab: %v\n", err)
