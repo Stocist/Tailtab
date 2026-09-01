@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/netip"
+	"regexp"
 	"strings"
 	"time"
 
@@ -72,12 +73,16 @@ func allowTailnetHost(host string) error {
 		return fmt.Errorf("%w: %s is not a MagicDNS name", ErrNotTailnet, h)
 	}
 	// A single label is a MagicDNS short name, e.g. "wiki" — unless it is a
-	// bare number, which is only ever an obfuscated IPv4 address.
-	if strings.IndexFunc(h, func(r rune) bool { return r < '0' || r > '9' }) < 0 {
+	// bare number, which is only ever an obfuscated IPv4 address such as
+	// 2130706433 or 0x7f000001 for 127.0.0.1.
+	if numericHost.MatchString(h) {
 		return fmt.Errorf("%w: %s is a numeric address", ErrNotTailnet, h)
 	}
 	return nil
 }
+
+// numericHost matches the decimal and hexadecimal forms of a bare IPv4 address.
+var numericHost = regexp.MustCompile(`^([0-9]+|0x[0-9a-f]+)$`)
 
 // hostOnly strips a port from a host:port, tolerating a bare host.
 func hostOnly(hostport string) string {

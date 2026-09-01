@@ -35,6 +35,10 @@ function tailtabIsTailnetHost(host, tailnetDomain) {
     return h.indexOf("fd7a:115c:a1e0") === 0;
   }
 
+  // A bare number is never a MagicDNS name: it is an obfuscated form of an
+  // IPv4 address, such as 2130706433 or 0x7f000001 for 127.0.0.1.
+  if (/^\d+$/.test(h) || /^0x[0-9a-f]+$/.test(h)) return false;
+
   // A single-label name is a MagicDNS short name, e.g. "wiki". A machine on
   // the local network would also match, which is the trade phase 0 accepts.
   if (h.indexOf(".") === -1) return true;

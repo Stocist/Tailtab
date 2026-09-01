@@ -224,6 +224,7 @@ func TestAllowTailnetHost(t *testing.T) {
 		"ts.net.attacker.com",               // suffix in the middle
 		"wiki.tail4d5e6f.ts.net.evil.com",  // suffix in the middle
 		"2130706433",                        // 127.0.0.1 as an integer
+		"0x7f000001",                        // 127.0.0.1 as hexadecimal
 	}
 	for _, h := range refused {
 		err := allowTailnetHost(h)

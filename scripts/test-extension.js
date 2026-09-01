@@ -226,6 +226,39 @@ test("the backoff resets once the host answers", async () => {
   eq(env.runNextTimer(), 1000, "delay after a successful exchange");
 });
 
+// The split-tunnel rules, checked through the predicate and through the PAC
+// script generated from it, which must agree on every host.
+test("the split-tunnel rules and the generated PAC agree", () => {
+  const ctx = vm.createContext({ console: console });
+  vm.runInContext(rulesSrc, ctx, { filename: "rules.js" });
+  const isTailnet = ctx.tailtabIsTailnetHost;
+  const pac = ctx.tailtabBuildPac(51234, "tail4d5e6f.ts.net");
+  const findProxy = vm.runInContext(pac + "\nFindProxyForURL", vm.createContext({}));
+
+  const proxied = [
+    "wiki", "server", "WIKI", "wiki.tail4d5e6f.ts.net", "wiki.tail4d5e6f.ts.net.",
+    "WIKI.TAIL4D5E6F.TS.NET", "host.tail1a2b3c.ts.net", "tail4d5e6f.ts.net",
+    "100.64.0.1", "100.101.102.103", "100.127.255.255",
+    "fd7a:115c:a1e0::1", "[fd7a:115c:a1e0:ab12::1]",
+  ];
+  const direct = [
+    "", "github.com", "www.google.com", "8.8.8.8", "localhost", "dev.localhost",
+    "127.0.0.1", "::1", "192.168.1.1", "100.63.255.255", "100.128.0.1", "fd00::1",
+    "evil-ts.net", "notts.net", "ts.net.attacker.com",
+    "wiki.tail4d5e6f.ts.net.attacker.com", "100.64.0.1.evil.com", "127.example.com",
+    // Obfuscated forms of 127.0.0.1, which are not MagicDNS names.
+    "2130706433", "0x7f000001",
+  ];
+  for (const host of proxied) {
+    if (isTailnet(host, "tail4d5e6f.ts.net") !== true) throw new Error("predicate sends " + JSON.stringify(host) + " direct, want proxied");
+    if (findProxy("http://" + host + "/", host) !== "SOCKS5 127.0.0.1:51234") throw new Error("PAC sends " + JSON.stringify(host) + " direct, want proxied");
+  }
+  for (const host of direct) {
+    if (isTailnet(host, "tail4d5e6f.ts.net") !== false) throw new Error("predicate proxies " + JSON.stringify(host) + ", want direct");
+    if (findProxy("http://" + host + "/", host) !== "DIRECT") throw new Error("PAC proxies " + JSON.stringify(host) + ", want direct");
+  }
+});
+
 (async () => {
   let failed = 0;
   for (const t of tests) {
