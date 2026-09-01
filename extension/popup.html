@@ -47,6 +47,19 @@
       #hint {
         color: var(--muted);
       }
+      #warnings {
+        margin: 8px 0 0;
+        padding: 0 0 0 16px;
+        color: var(--muted);
+      }
+      #warnings li {
+        margin-top: 3px;
+        overflow-wrap: anywhere;
+      }
+      button[disabled] {
+        opacity: 0.6;
+        cursor: default;
+      }
       dl {
         margin: 10px 0 0;
         display: grid;
@@ -95,6 +108,7 @@
     <h1>tailtab</h1>
     <div id="state">Starting…</div>
     <div id="hint"></div>
+    <ul id="warnings" hidden></ul>
 
     <dl id="details" hidden>
       <dt>Tailnet</dt>

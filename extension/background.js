@@ -24,7 +24,7 @@ const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 
 // The last status event from the host, and the only thing the UI renders.
-let status = { state: "Disconnected", error: "", proxyPort: 0, tailnet: "" };
+let status = { state: "Disconnected", error: "", proxyPort: 0, tailnet: "", warnings: [] };
 // Why the proxy could not be configured, if it could not be.
 let proxyProblem = "";
 
@@ -123,6 +123,7 @@ function connect() {
       error: why,
       proxyPort: 0,
       tailnet: status.tailnet,
+      warnings: [],
     });
     scheduleReconnect(why);
   });
@@ -183,6 +184,8 @@ function onHostMessage(msg) {
     selfIP: msg.selfIP || "",
     proxyPort: msg.proxyPort || 0,
     error: msg.error || "",
+    // Why the node is unhealthy — a blocked control plane, for instance.
+    warnings: Array.isArray(msg.warnings) ? msg.warnings : [],
   });
 }
 

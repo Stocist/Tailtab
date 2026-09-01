@@ -16,6 +16,10 @@ const port = api.runtime.connect({ name: "popup" });
 const el = (id) => document.getElementById(id);
 let latest = null;
 let logoutArmed = false;
+// Set when Connect is pressed and cleared once the host answers with a login
+// URL or an error. Asking control for a URL can take a while, and can fail
+// silently when the network is blocked, which made the button look dead.
+let awaitingLogin = false;
 
 // A state the node reports that is worth explaining.
 const HINTS = {
@@ -37,8 +41,27 @@ function render(msg) {
   const state = st.state || "Unknown";
   const running = state === "Running";
 
+  const warnings = Array.isArray(st.warnings) ? st.warnings : [];
+  if (st.authURL || st.error || running || state === "Starting") {
+    awaitingLogin = false;
+  }
+
   el("state").textContent = running ? "Connected" : state;
-  el("hint").textContent = st.error || HINTS[state] || "";
+  el("hint").textContent = awaitingLogin
+    ? "Requesting login link…"
+    : st.error || HINTS[state] || "";
+
+  // The reason a login is failing arrives as a health warning, so it is shown
+  // whether or not it also became the hint above.
+  const list = el("warnings");
+  list.textContent = "";
+  const extra = warnings.filter((w) => w !== st.error).slice(0, 4);
+  for (const text of extra) {
+    const li = document.createElement("li");
+    li.textContent = text;
+    list.appendChild(li);
+  }
+  list.hidden = extra.length === 0;
 
   el("details").hidden = !running;
   if (running) {
@@ -48,8 +71,11 @@ function render(msg) {
     el("port").textContent = st.proxyPort ? "127.0.0.1:" + st.proxyPort : "not listening";
   }
 
+  // A login URL is always offered when there is one, warnings or not.
   el("login").hidden = !st.authURL;
   el("connect").hidden = running || !!st.authURL || !msg.connected;
+  el("connect").disabled = awaitingLogin;
+  el("connect").textContent = awaitingLogin ? "Requesting…" : "Connect";
   el("disconnect").hidden = !running;
   el("logout").hidden = !msg.connected || (!running && state !== "Stopped");
 
@@ -75,7 +101,17 @@ el("login").addEventListener("click", () => {
   window.close();
 });
 
-el("connect").addEventListener("click", () => port.postMessage({ cmd: "up" }));
+el("connect").addEventListener("click", () => {
+  const st = (latest && latest.status) || {};
+  // Only NeedsLogin waits on control for a URL; from Stopped, up is immediate.
+  awaitingLogin = st.state === "NeedsLogin" && !st.authURL;
+  if (awaitingLogin) {
+    el("hint").textContent = "Requesting login link…";
+    el("connect").disabled = true;
+    el("connect").textContent = "Requesting…";
+  }
+  port.postMessage({ cmd: "up" });
+});
 el("disconnect").addEventListener("click", () => port.postMessage({ cmd: "down" }));
 
 // Two-step confirmation: a dialog from a popup is unreliable across browsers,
