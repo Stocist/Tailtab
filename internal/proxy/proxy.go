@@ -17,7 +17,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"strings"
+	"time"
 
 	"tailscale.com/net/proxymux"
 	"tailscale.com/net/socks5"
@@ -27,6 +29,75 @@ import (
 
 // DialFunc dials one connection out through the tailnet.
 type DialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
+
+// ErrNotTailnet is returned for a destination the tailnet does not serve.
+var ErrNotTailnet = errors.New("not a tailnet destination")
+
+// Tailscale's address ranges: CGNAT for IPv4, and its ULA prefix for IPv6.
+var (
+	tailscaleV4 = netip.MustParsePrefix("100.64.0.0/10")
+	tailscaleV6 = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
+)
+
+// allowTailnetHost reports whether host is something the tailnet can serve.
+//
+// Without this check the listener is a general-purpose open forward proxy, not
+// a tailnet proxy: UserDial falls back to the system resolver and then to a
+// plain dial for anything MagicDNS does not know, so any local process could
+// use it to reach the whole internet. The extension only ever sends tailnet
+// traffic here, so refusing the rest costs nothing.
+//
+// These are the rules in extension/rules.js, in Go. The two are kept in step by
+// hand; each is tested on both sides.
+func allowTailnetHost(host string) error {
+	h := strings.ToLower(strings.TrimSuffix(host, "."))
+	h = strings.TrimSuffix(strings.TrimPrefix(h, "["), "]")
+	if h == "" {
+		return fmt.Errorf("%w: no host", ErrNotTailnet)
+	}
+	if addr, err := netip.ParseAddr(h); err == nil {
+		addr = addr.Unmap()
+		if tailscaleV4.Contains(addr) || tailscaleV6.Contains(addr) {
+			return nil
+		}
+		return fmt.Errorf("%w: %s is outside %s and %s", ErrNotTailnet, h, tailscaleV4, tailscaleV6)
+	}
+	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
+		return fmt.Errorf("%w: %s is loopback", ErrNotTailnet, h)
+	}
+	if strings.HasSuffix(h, ".ts.net") {
+		return nil
+	}
+	if strings.Contains(h, ".") {
+		return fmt.Errorf("%w: %s is not a MagicDNS name", ErrNotTailnet, h)
+	}
+	// A single label is a MagicDNS short name, e.g. "wiki" — unless it is a
+	// bare number, which is only ever an obfuscated IPv4 address.
+	if strings.IndexFunc(h, func(r rune) bool { return r < '0' || r > '9' }) < 0 {
+		return fmt.Errorf("%w: %s is a numeric address", ErrNotTailnet, h)
+	}
+	return nil
+}
+
+// hostOnly strips a port from a host:port, tolerating a bare host.
+func hostOnly(hostport string) string {
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		return h
+	}
+	return hostport
+}
+
+// guard refuses non-tailnet destinations before they reach dial. It wraps every
+// dialer the proxy uses, so the SOCKS5 path is covered too — SOCKS has no
+// handler in front of it to check first.
+func guard(dial DialFunc) DialFunc {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if err := allowTailnetHost(hostOnly(addr)); err != nil {
+			return nil, err
+		}
+		return dial(ctx, network, addr)
+	}
+}
 
 // dialTailnet is the single place this program dials the tailnet.
 //
@@ -41,6 +112,11 @@ type DialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
 // would bypass the tailnet resolver entirely.
 func dialTailnet(ts *tsnet.Server) DialFunc {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		// Also checked in guard, which wraps this. Repeated here because this
+		// is the function that reaches the network: it has to be safe alone.
+		if err := allowTailnetHost(hostOnly(addr)); err != nil {
+			return nil, err
+		}
 		sys := ts.Sys()
 		if sys == nil {
 			return nil, errors.New("tailtab: the node is not running")
@@ -74,10 +150,16 @@ func start(dial DialFunc) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("binding the loopback proxy: %w", err)
 	}
-	s := &Server{dial: dial, ln: ln}
+	s := &Server{dial: guard(dial), ln: ln}
 
 	socksLn, httpLn := proxymux.SplitSOCKSAndHTTP(ln)
-	s.http = &http.Server{Handler: s.handler()}
+	s.http = &http.Server{
+		Handler: s.handler(),
+		// A local process must not be able to pin connections open by opening
+		// them and going quiet.
+		ReadHeaderTimeout: 30 * time.Second,
+		IdleTimeout:       90 * time.Second,
+	}
 
 	go func() {
 		if err := s.http.Serve(httpLn); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
@@ -127,10 +209,19 @@ var hopByHop = []string{"Proxy-Connection", "Proxy-Authenticate", "Proxy-Authori
 
 func (s *Server) handler() http.Handler {
 	rp := &httputil.ReverseProxy{
-		Director:  func(*http.Request) {}, // the request is already absolute
+		Director: func(r *http.Request) {
+			// ReverseProxy adds X-Forwarded-For by default, which would tell
+			// every tailnet service the loopback address of the proxy. The
+			// browser did not send it, so neither do we.
+			r.Header["X-Forwarded-For"] = nil
+		},
 		Transport: &http.Transport{DialContext: s.dial},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			log.Printf("proxying %s: %v", r.Host, err)
+			if errors.Is(err, ErrNotTailnet) {
+				http.Error(w, "tailtab: "+err.Error(), http.StatusForbidden)
+				return
+			}
 			http.Error(w, "tailtab: "+err.Error(), http.StatusBadGateway)
 		},
 	}
@@ -149,15 +240,27 @@ func (s *Server) handler() http.Handler {
 			http.Error(w, "tailtab: this is a proxy; use an absolute URL or CONNECT", http.StatusBadRequest)
 			return
 		}
+		if err := allowTailnetHost(r.URL.Hostname()); err != nil {
+			http.Error(w, "tailtab: "+err.Error(), http.StatusForbidden)
+			return
+		}
 		rp.ServeHTTP(w, r)
 	})
 }
 
 // serveConnect tunnels a CONNECT request to the tailnet.
 func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request) {
+	if err := allowTailnetHost(hostOnly(r.RequestURI)); err != nil {
+		http.Error(w, "tailtab: "+err.Error(), http.StatusForbidden)
+		return
+	}
 	dst, err := s.dial(r.Context(), "tcp", r.RequestURI)
 	if err != nil {
 		log.Printf("CONNECT %s: %v", r.RequestURI, err)
+		if errors.Is(err, ErrNotTailnet) {
+			http.Error(w, "tailtab: "+err.Error(), http.StatusForbidden)
+			return
+		}
 		http.Error(w, "tailtab: "+err.Error(), http.StatusBadGateway)
 		return
 	}

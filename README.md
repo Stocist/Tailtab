@@ -3,7 +3,8 @@
 tailtab gives one browser profile its own Tailscale node. A WebExtension talks
 over native messaging to a Go host that embeds `tsnet`; the host runs a
 SOCKS5/HTTP proxy on loopback, and the extension sends only tailnet-bound
-traffic there. No system-wide Tailscale, no root, and two browser profiles can
+traffic there. The listener refuses anything else on its own account, so it is
+a tailnet proxy rather than a general forward proxy. No system-wide Tailscale, no root, and two browser profiles can
 sit on two different tailnets at once.
 
 Phase 0 targets macOS with Zen (Firefox 154-based) and Microsoft Edge.
@@ -94,8 +95,12 @@ else.
 
 - macOS only; Zen and Edge only.
 - No proxy authentication. The proxy binds a random port on 127.0.0.1 and takes
-  any connection — Chromium cannot do SOCKS5 authentication at all, so loopback
-  is the boundary.
+  any connection from this machine — Chromium cannot do SOCKS5 authentication
+  at all, so loopback is the boundary. What a caller can reach through it is
+  limited instead: the listener only dials MagicDNS names, `*.ts.net`, and
+  addresses in `100.64.0.0/10` or `fd7a:115c:a1e0::/48`, and refuses everything
+  else with 403 (HTTP) or a SOCKS failure reply. A tailnet with a custom
+  MagicDNS domain is not covered by that list and would be refused.
 - No exit nodes, no peer list, no store packaging, placeholder icons.
 - A temporary add-on in Zen has to be re-loaded after every restart.
 - Firefox private windows are only covered if you enable *Run in Private
