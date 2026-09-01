@@ -126,7 +126,6 @@ function connect() {
     });
     scheduleReconnect(why);
   });
-  reconnectDelay = RECONNECT_MIN_MS;
   sendInit();
 }
 
@@ -163,6 +162,12 @@ function send(cmd) {
 
 function onHostMessage(msg) {
   if (!msg || typeof msg !== "object") return;
+  // The host answered, so this attempt worked and the backoff starts over.
+  // Resetting in connect() instead would never let the delay grow:
+  // connectNative does not throw for a missing or crashing host, it reports
+  // the failure later on onDisconnect, so the reset always won the race and
+  // left a flat one-second retry loop.
+  reconnectDelay = RECONNECT_MIN_MS;
   if (msg.event === "error") {
     status = Object.assign({}, status, { error: msg.error || "unknown error" });
     pushToPopups();

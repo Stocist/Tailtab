@@ -192,6 +192,40 @@ test("proxy settings owned by policy are left alone", async () => {
   eq(env.calls.set, [], "no attempt to take a setting owned by policy");
 });
 
+// F1. The reset used to run in connect(), which always beat the doubling in
+// scheduleReconnect because connectNative fails asynchronously.
+test("the reconnect backoff doubles to the 30s cap", async () => {
+  const env = newEnv();
+  await settle();
+
+  const delays = [];
+  for (let i = 0; i < 6; i++) {
+    env.disconnect();
+    await settle();
+    delays.push(env.runNextTimer());
+  }
+  eq(delays, [1000, 2000, 4000, 8000, 16000, 30000], "backoff delays");
+});
+
+test("the backoff resets once the host answers", async () => {
+  const env = newEnv();
+  await settle();
+
+  env.disconnect();
+  await settle();
+  eq(env.runNextTimer(), 1000, "first delay");
+  env.disconnect();
+  await settle();
+  eq(env.runNextTimer(), 2000, "second delay");
+
+  // A live host answers, so the next failure starts from the bottom again.
+  env.status(RUNNING);
+  await settle();
+  env.disconnect();
+  await settle();
+  eq(env.runNextTimer(), 1000, "delay after a successful exchange");
+});
+
 (async () => {
   let failed = 0;
   for (const t of tests) {
