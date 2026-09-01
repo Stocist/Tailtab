@@ -10,16 +10,33 @@ import (
 
 	"github.com/Stocist/tailtab/internal/nm"
 	"github.com/Stocist/tailtab/internal/node"
+	"github.com/Stocist/tailtab/internal/proxy"
 )
 
-// nodeBackend adapts a tsnet node to the host's backend interface.
+// nodeBackend adapts a tsnet node and its loopback proxy to the host's backend
+// interface.
 type nodeBackend struct {
-	h    *host
-	node *node.Node
+	h     *host
+	node  *node.Node
+	proxy *proxy.Server
 }
 
 func (b *nodeBackend) Init(profileID, browser string) error {
-	return b.node.Start(profileID, browser)
+	if err := b.node.Start(profileID, browser); err != nil {
+		return err
+	}
+	// The proxy comes up with the node, before login, so the extension can wire
+	// the browser to a stable port once. Requests fail until the node runs.
+	p, err := proxy.Start(b.node.TSNet())
+	if err != nil {
+		return err
+	}
+	b.proxy = p
+	b.h.mu.Lock()
+	b.h.proxyPort = p.Port()
+	b.h.mu.Unlock()
+	log.Printf("proxy listening on 127.0.0.1:%d", p.Port())
+	return nil
 }
 
 func (b *nodeBackend) Status() *nm.Event {
@@ -36,7 +53,13 @@ func (b *nodeBackend) Status() *nm.Event {
 
 func (b *nodeBackend) SetWantRunning(up bool) error { return b.node.SetWantRunning(up) }
 func (b *nodeBackend) Logout() error                { return b.node.Logout() }
-func (b *nodeBackend) Close() error                 { return b.node.Close() }
+func (b *nodeBackend) Close() error {
+	err := b.proxy.Close()
+	if nerr := b.node.Close(); err == nil {
+		err = nerr
+	}
+	return err
+}
 
 // backend is the node half of the host, behind an interface so the message
 // loop can be exercised without a tailnet.
