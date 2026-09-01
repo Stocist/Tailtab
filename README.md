@@ -110,7 +110,12 @@ else.
 
 ```sh
 go build ./... && go vet ./... && go test ./...
+node scripts/test-extension.js
 ```
+
+`scripts/test-extension.js` runs `extension/background.js` under a stubbed
+Chromium API with fake timers, so the proxy-configuration lifecycle, the
+reconnect backoff and the split-tunnel rules are testable without a browser.
 
 The host can be driven by hand: it reads 4-byte little-endian length-prefixed
 JSON on stdin and writes the same framing on stdout.
