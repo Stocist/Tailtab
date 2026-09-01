@@ -1,0 +1,17 @@
+# Go
+/bin/
+/dist/
+*.test
+*.out
+
+# Extension build output
+/extension/dist/
+
+# tsnet state / local runtime (never commit node keys)
+/state/
+*.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
