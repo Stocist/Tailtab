@@ -376,6 +376,121 @@ test("a popup command reaches the host and the popup is answered", async () => {
   if (env.popupMessages.length <= before) throw new Error("the popup was not answered after its command");
 });
 
+// popup.js renders against a DOM, so it gets a small stub of one. The popup
+// keeps no state of its own: everything below is a function of the last status
+// payload the background pushed.
+function openPopupUI() {
+  const els = {};
+  const makeEl = () => {
+    const el = { hidden: false, disabled: false, children: [], listeners: {} };
+    let text = "";
+    Object.defineProperty(el, "textContent", {
+      get: () => text,
+      set: (v) => { text = v; el.children.length = 0; },
+    });
+    el.appendChild = (child) => el.children.push(child);
+    el.addEventListener = (name, fn) => { el.listeners[name] = fn; };
+    return el;
+  };
+  for (const id of ["state", "hint", "warnings", "details", "tailnet", "hostname", "selfip", "port", "login", "connect", "disconnect", "logout", "warning"]) {
+    els[id] = makeEl();
+  }
+
+  let backgroundPort = null;
+  const sandbox = {
+    console: { log() {}, warn() {}, error() {} },
+    setTimeout: () => 1,
+    clearTimeout: () => {},
+    window: { close() {} },
+    document: {
+      getElementById: (id) => els[id],
+      createElement: () => makeEl(),
+    },
+    chrome: {
+      runtime: {
+        connect: () => {
+          backgroundPort = {
+            listeners: [],
+            onMessage: { addListener: (f) => backgroundPort.listeners.push(f) },
+            postMessage: () => {},
+          };
+          return backgroundPort;
+        },
+      },
+      tabs: { create() {} },
+    },
+  };
+  sandbox.globalThis = sandbox;
+  const ctx = vm.createContext(sandbox);
+  vm.runInContext(read("popup.js"), ctx, { filename: "popup.js" });
+
+  return {
+    els: els,
+    push(payload) {
+      for (const fn of backgroundPort.listeners) fn(payload);
+    },
+    warningTexts: () => els.warnings.children.map((c) => c.textContent),
+  };
+}
+
+const LOGIN_ERROR = "You are logged out. The last login error was: all connection attempts failed";
+
+// Architect ruling: an auth URL supersedes the last login error. The error must
+// not sit on the hint line beside a working Log in button, but it must stay
+// visible in the warnings list so a node that genuinely cannot reach control
+// still explains itself.
+test("a login URL supersedes the login error on the hint line", () => {
+  const ui = openPopupUI();
+  ui.push({
+    connected: true,
+    status: {
+      state: "NeedsLogin",
+      authURL: "https://login.tailscale.com/a/deadbeef",
+      error: LOGIN_ERROR,
+      warnings: [LOGIN_ERROR, "Cannot reach the coordination server"],
+    },
+  });
+
+  if (ui.els.hint.textContent === LOGIN_ERROR) {
+    throw new Error("the login error is still on the hint line beside the Log in button");
+  }
+  eq(ui.els.hint.textContent, "Log in to connect this browser profile to a tailnet.", "hint line");
+  if (ui.els.login.hidden) throw new Error("the Log in button is hidden while an auth URL exists");
+  // Still explained, one line down.
+  eq(ui.warningTexts(), [LOGIN_ERROR, "Cannot reach the coordination server"], "warnings list");
+  if (ui.els.warnings.hidden) throw new Error("the warnings list is hidden");
+});
+
+test("with no login URL the error is the hint and is not repeated below", () => {
+  const ui = openPopupUI();
+  ui.push({
+    connected: true,
+    status: {
+      state: "NeedsLogin",
+      authURL: "",
+      error: LOGIN_ERROR,
+      warnings: [LOGIN_ERROR, "Cannot reach the coordination server"],
+    },
+  });
+
+  eq(ui.els.hint.textContent, LOGIN_ERROR, "hint line");
+  eq(ui.warningTexts(), ["Cannot reach the coordination server"], "warnings list without the duplicate");
+});
+
+test("a running node shows its details and no warnings", () => {
+  const ui = openPopupUI();
+  ui.push({
+    connected: true,
+    status: { state: "Running", tailnet: "tail4d5e6f.ts.net", hostname: "mac-tailtab-edge", selfIP: "100.64.0.9", proxyPort: 64378, warnings: [] },
+  });
+  eq(ui.els.state.textContent, "Connected", "state line");
+  eq(ui.els.details.hidden, false, "details shown");
+  eq(ui.els.tailnet.textContent, "tail4d5e6f.ts.net", "tailnet");
+  eq(ui.els.warnings.hidden, true, "warnings hidden");
+  eq(ui.els.login.hidden, true, "Log in hidden while running");
+  eq(ui.els.disconnect.hidden, false, "Disconnect offered");
+});
+
 (async () => {
   let failed = 0;
   for (const t of tests) {

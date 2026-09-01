@@ -46,16 +46,22 @@ function render(msg) {
     awaitingLogin = false;
   }
 
+  // A login URL supersedes the last login error: the error explains a failure
+  // the URL has already moved past, and showing it beside a working Log in
+  // button reads as though the button will not work. It stays in the warnings
+  // list below, so a node that genuinely cannot reach control still says so.
+  const errorLine = st.authURL ? "" : st.error;
+
   el("state").textContent = running ? "Connected" : state;
   el("hint").textContent = awaitingLogin
     ? "Requesting login link…"
-    : st.error || HINTS[state] || "";
+    : errorLine || HINTS[state] || "";
 
   // The reason a login is failing arrives as a health warning, so it is shown
   // whether or not it also became the hint above.
   const list = el("warnings");
   list.textContent = "";
-  const extra = warnings.filter((w) => w !== st.error).slice(0, 4);
+  const extra = warnings.filter((w) => w !== errorLine).slice(0, 4);
   for (const text of extra) {
     const li = document.createElement("li");
     li.textContent = text;
