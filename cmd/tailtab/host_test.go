@@ -71,7 +71,7 @@ func runLoop(t *testing.T, be backend, msgs ...string) []nm.Event {
 	}
 	var out bytes.Buffer
 	h := &host{codec: nm.NewCodec(&in, &out), be: be}
-	if err := h.loop(); !errors.Is(err, io.EOF) {
+	if err := h.loop(); !errors.Is(err, io.EOF) && h.fatal == nil {
 		t.Fatalf("loop ended with %v, want io.EOF", err)
 	}
 
@@ -180,5 +180,29 @@ func TestLoopReportsInitFailure(t *testing.T) {
 	}
 	if events[1].Event != "error" || !strings.Contains(events[1].Error, "not writable") {
 		t.Errorf("got %+v, want the backend error surfaced", events[1])
+	}
+}
+
+func TestInitFailureIsFatal(t *testing.T) {
+	// A node that will not start leaves the process with nothing to do, so the
+	// loop must end and main can exit non-zero. Commands after it are not read.
+	be := &fakeBackend{initErr: errors.New("bind: address already in use")}
+	var in bytes.Buffer
+	for _, m := range []string{
+		`{"cmd":"init","profileID":"` + goodID + `","browser":"edge"}`,
+		`{"cmd":"status"}`,
+	} {
+		var hdr [4]byte
+		binary.LittleEndian.PutUint32(hdr[:], uint32(len(m)))
+		in.Write(hdr[:])
+		in.WriteString(m)
+	}
+	h := &host{codec: nm.NewCodec(&in, &bytes.Buffer{}), be: be}
+	err := h.loop()
+	if err == nil || errors.Is(err, io.EOF) {
+		t.Fatalf("loop returned %v, want the init failure", err)
+	}
+	if !strings.Contains(err.Error(), "already in use") {
+		t.Errorf("loop returned %v, want the bind error", err)
 	}
 }

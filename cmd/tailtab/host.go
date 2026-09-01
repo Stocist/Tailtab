@@ -9,7 +9,34 @@ import (
 	"sync"
 
 	"github.com/Stocist/tailtab/internal/nm"
+	"github.com/Stocist/tailtab/internal/node"
 )
+
+// nodeBackend adapts a tsnet node to the host's backend interface.
+type nodeBackend struct {
+	h    *host
+	node *node.Node
+}
+
+func (b *nodeBackend) Init(profileID, browser string) error {
+	return b.node.Start(profileID, browser)
+}
+
+func (b *nodeBackend) Status() *nm.Event {
+	st := b.node.Status()
+	ev := nm.StatusEvent()
+	ev.State = st.State
+	ev.AuthURL = st.AuthURL
+	ev.Tailnet = st.Tailnet
+	ev.Hostname = st.Hostname
+	ev.SelfIP = st.SelfIP
+	ev.Error = st.Error
+	return ev
+}
+
+func (b *nodeBackend) SetWantRunning(up bool) error { return b.node.SetWantRunning(up) }
+func (b *nodeBackend) Logout() error                { return b.node.Logout() }
+func (b *nodeBackend) Close() error                 { return b.node.Close() }
 
 // backend is the node half of the host, behind an interface so the message
 // loop can be exercised without a tailnet.
@@ -32,16 +59,19 @@ type host struct {
 
 	mu        sync.Mutex
 	be        backend
-	initTried bool // an init command has been accepted
-	initOK    bool // that init succeeded, so the node exists
+	initTried bool  // an init command has been accepted
+	initOK    bool  // that init succeeded, so the node exists
+	fatal     error // set when the host cannot go on, e.g. the node would not start
+	proxyPort int
 }
 
 // runHost runs the native-messaging loop until stdin closes, then exits.
 func runHost() {
 	h := &host{codec: nm.NewCodec(os.Stdin, os.Stdout)}
-	defer h.close()
+	h.be = &nodeBackend{h: h, node: node.New(func(node.Status) { h.sendStatus() })}
 
 	err := h.loop()
+	h.close()
 	if err != nil && !errors.Is(err, io.EOF) {
 		log.Printf("message loop ended: %v", err)
 		os.Exit(1)
@@ -67,6 +97,12 @@ func (h *host) loop() error {
 		if err := h.handle(req); err != nil {
 			log.Printf("command %q: %v", req.Cmd, err)
 			h.sendError(err)
+		}
+		h.mu.Lock()
+		fatal := h.fatal
+		h.mu.Unlock()
+		if fatal != nil {
+			return fatal
 		}
 	}
 }
@@ -131,6 +167,11 @@ func (h *host) handleInit(req *nm.Request) error {
 	}
 	defer h.sendStatus()
 	if err := be.Init(req.ProfileID, req.Browser); err != nil {
+		// Without a node this process has nothing to offer. Report it and let
+		// the loop exit non-zero; the extension reconnects with backoff.
+		h.mu.Lock()
+		h.fatal = err
+		h.mu.Unlock()
 		return err
 	}
 	h.mu.Lock()
@@ -150,6 +191,9 @@ func (h *host) sendStatus() {
 	} else {
 		ev.State = "NoState"
 	}
+	h.mu.Lock()
+	ev.ProxyPort = h.proxyPort
+	h.mu.Unlock()
 	if err := h.codec.Write(ev); err != nil {
 		log.Printf("writing status event: %v", err)
 	}
