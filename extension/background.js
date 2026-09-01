@@ -93,9 +93,9 @@ async function applyProxy() {
   );
 }
 
-// clearProxy hands the setting back. It runs when the user disconnects, never
-// on a host crash: the PAC only ever routes tailnet hosts, so leaving it in
-// place cannot break ordinary browsing.
+// clearProxy hands the setting back. It runs on any transition out of Running.
+// Ordinary browsing is unaffected either way: the PAC only ever routes tailnet
+// hosts, so leaving it installed could not break anything.
 async function clearProxy() {
   if (USE_ON_REQUEST) return;
   await new Promise((resolve) => chrome.proxy.settings.clear({ scope: "regular" }, resolve));
@@ -117,15 +117,14 @@ function connect() {
     const err = api.runtime.lastError;
     nativePort = null;
     initSent = false;
-    status = {
+    const why = err && err.message ? err.message : "The tailtab host stopped.";
+    setStatus({
       state: "Disconnected",
-      error: err && err.message ? err.message : "The tailtab host stopped.",
+      error: why,
       proxyPort: 0,
       tailnet: status.tailnet,
-    };
-    saveStatus();
-    pushToPopups();
-    scheduleReconnect(status.error);
+    });
+    scheduleReconnect(why);
   });
   reconnectDelay = RECONNECT_MIN_MS;
   sendInit();
@@ -171,8 +170,7 @@ function onHostMessage(msg) {
   }
   if (msg.event !== "status") return;
 
-  const previous = status;
-  status = {
+  setStatus({
     state: msg.state || "",
     authURL: msg.authURL || "",
     tailnet: msg.tailnet || "",
@@ -180,12 +178,32 @@ function onHostMessage(msg) {
     selfIP: msg.selfIP || "",
     proxyPort: msg.proxyPort || 0,
     error: msg.error || "",
-  };
+  });
+}
+
+// setStatus records a new status and keeps the browser's proxy configuration in
+// step with it.
+//
+// The decision is keyed on the Running transition, not on the port or tailnet
+// changing. Disconnect and Connect against one host process leave both of those
+// identical, so a diff-based guard would hand the proxy setting back on
+// Disconnect and never take it again, leaving a popup that says Connected over
+// a browser with no PAC at all.
+function setStatus(next) {
+  const previous = status;
+  status = next;
   saveStatus();
-  // The PAC embeds both the port and the tailnet suffix, so it is rewritten
-  // whenever either changes.
-  if (status.proxyPort !== previous.proxyPort || status.tailnet !== previous.tailnet) {
-    applyProxy();
+
+  const wasRunning = previous.state === "Running";
+  const isRunning = next.state === "Running";
+  if (isRunning) {
+    // The PAC embeds the port and the tailnet suffix, so it is also rewritten
+    // whenever either of those changes underneath a live connection.
+    if (!wasRunning || next.proxyPort !== previous.proxyPort || next.tailnet !== previous.tailnet) {
+      applyProxy();
+    }
+  } else if (wasRunning) {
+    clearProxy();
   }
   pushToPopups();
 }
@@ -203,8 +221,9 @@ api.runtime.onConnect.addListener((port) => {
         send("up");
         break;
       case "down":
+        // The proxy setting is handed back when the host reports that it has
+        // left Running, not here: if the command fails, nothing should change.
         send("down");
-        clearProxy();
         break;
       case "logout":
         send("logout");
