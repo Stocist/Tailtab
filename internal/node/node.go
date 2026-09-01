@@ -141,7 +141,13 @@ func (n *Node) Start(profileID, browser string) error {
 	// NotifyInitialStatus is what carries the tailnet name and self IP:
 	// Notify.NetMap is Windows-only as of v1.102.3 and is always nil here
 	// (research/tsnet.md §3), so nothing in this package may read it.
-	w, err := lc.WatchIPNBus(ctx, ipn.NotifyInitialState|ipn.NotifyInitialStatus|ipn.NotifyRateLimit)
+	//
+	// NotifyRateLimit is deliberately absent. At v1.102.3 it cannot be
+	// combined with NotifyInitialStatus: ipn.ValidateNotifyWatchOpt rejects
+	// the pair (ipn/backend.go, NotifyRateLimitIncompatibleBits) and the
+	// LocalAPI answers 400 Bad Request. Losing the rate limit only means more
+	// notifications, and update below drops the ones that change nothing.
+	w, err := lc.WatchIPNBus(ctx, ipn.NotifyInitialState|ipn.NotifyInitialStatus)
 	if err != nil {
 		cancel()
 		return fmt.Errorf("watching the IPN bus: %w", err)
@@ -255,7 +261,12 @@ func applyIPNStatus(st *Status, s *ipnstate.Status) {
 		st.AuthURL = s.AuthURL
 	}
 	if self := s.Self; self != nil {
-		if self.HostName != "" {
+		// DNSName is the node's own MagicDNS name and is what the tailnet
+		// calls this browser profile; HostName is the machine's OS hostname,
+		// which is all that exists before login.
+		if name, _, ok := strings.Cut(strings.TrimSuffix(self.DNSName, "."), "."); ok && name != "" {
+			st.Hostname = name
+		} else if self.HostName != "" {
 			st.Hostname = self.HostName
 		}
 		if len(self.TailscaleIPs) > 0 {
@@ -267,12 +278,18 @@ func applyIPNStatus(st *Status, s *ipnstate.Status) {
 	}
 }
 
-// update mutates the status under the lock and notifies the extension.
+// update mutates the status under the lock and notifies the extension, but
+// only when something actually changed: the bus is unrate-limited, so most
+// notifications leave the extension-visible status untouched.
 func (n *Node) update(f func(*Status)) {
 	n.mu.Lock()
+	before := n.st
 	f(&n.st)
 	st := n.st
 	n.mu.Unlock()
+	if st == before {
+		return
+	}
 	n.onChange(st)
 }
 

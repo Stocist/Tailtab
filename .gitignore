@@ -15,3 +15,6 @@
 .DS_Store
 .idea/
 .vscode/
+
+# Extension signing key (public key lives in manifest.chromium.json)
+*.pem
