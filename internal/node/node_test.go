@@ -2,12 +2,15 @@ package node
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 
+	"tailscale.com/health"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/tsconst"
 )
 
 // newTestNode returns a node with the login call stubbed, so the login path can
@@ -171,5 +174,120 @@ func TestStateDirIsPerProfile(t *testing.T) {
 	}
 	if !strings.HasSuffix(a, "tailtab/0f8fad5b-d9cb-469f-a165-70867728950e") {
 		t.Errorf("StateDir = %q, want it under tailtab/<profile>", a)
+	}
+}
+
+// unhealthy builds a health snapshot with the given warnable codes and texts.
+func unhealthy(pairs ...string) *health.State {
+	hs := &health.State{Warnings: map[health.WarnableCode]health.UnhealthyState{}}
+	for i := 0; i+1 < len(pairs); i += 2 {
+		code := health.WarnableCode(pairs[i])
+		hs.Warnings[code] = health.UnhealthyState{WarnableCode: code, Text: pairs[i+1]}
+	}
+	return hs
+}
+
+func TestHealthWarningsReachTheStatus(t *testing.T) {
+	n, _, _ := newTestNode(t)
+	ctx := context.Background()
+
+	n.apply(ctx, state(ipn.NeedsLogin))
+	n.apply(ctx, ipn.Notify{Health: unhealthy(
+		tsconst.HealthWarnableLoginState, "You are logged out. The last login error was: register request: all connection attempts failed",
+		"not-in-map-poll", "Cannot reach the coordination server",
+	)})
+
+	st := n.Status()
+	// Sorted by warnable code: login-state before not-in-map-poll.
+	want := []string{
+		"You are logged out. The last login error was: register request: all connection attempts failed",
+		"Cannot reach the coordination server",
+	}
+	if !slices.Equal(st.Warnings, want) {
+		t.Errorf("Warnings = %q, want %q", st.Warnings, want)
+	}
+	// This is the whole point: a node that is logged out because it cannot
+	// reach control must not look like one merely waiting for the user.
+	if !strings.Contains(st.Error, "all connection attempts failed") {
+		t.Errorf("Error = %q, want the login-state warnable's text", st.Error)
+	}
+}
+
+func TestHealthChangesCountAsAChange(t *testing.T) {
+	n, _, seen := newTestNode(t)
+	ctx := context.Background()
+
+	n.apply(ctx, state(ipn.NeedsLogin))
+	pushes := len(*seen)
+
+	n.apply(ctx, ipn.Notify{Health: unhealthy("not-in-map-poll", "Cannot reach the coordination server")})
+	if len(*seen) != pushes+1 {
+		t.Fatalf("a new warning pushed %d events, want 1", len(*seen)-pushes)
+	}
+	// The same warning again changes nothing and must be suppressed.
+	n.apply(ctx, ipn.Notify{Health: unhealthy("not-in-map-poll", "Cannot reach the coordination server")})
+	if len(*seen) != pushes+1 {
+		t.Errorf("an unchanged warning pushed another event")
+	}
+	// Recovering clears it, which is a change.
+	n.apply(ctx, ipn.Notify{Health: &health.State{}})
+	if len(*seen) != pushes+2 {
+		t.Fatalf("clearing the warnings pushed %d events, want 1", len(*seen)-pushes-1)
+	}
+	if got := n.Status().Warnings; len(got) != 0 {
+		t.Errorf("Warnings = %q after recovery, want none", got)
+	}
+}
+
+func TestLoginWarningIsReappliedAndCleared(t *testing.T) {
+	n, _, _ := newTestNode(t)
+	ctx := context.Background()
+
+	n.apply(ctx, ipn.Notify{Health: unhealthy(tsconst.HealthWarnableLoginState, "You are logged out.")})
+	n.apply(ctx, state(ipn.NeedsLogin))
+	if got := n.Status().Error; got != "You are logged out." {
+		t.Errorf("Error = %q, want the login warning applied when the state arrives after it", got)
+	}
+	// Health recovers: the stale explanation must go with it.
+	n.apply(ctx, ipn.Notify{Health: &health.State{}})
+	n.apply(ctx, state(ipn.Starting))
+	n.apply(ctx, state(ipn.NeedsLogin))
+	if got := n.Status().Error; got != "" {
+		t.Errorf("Error = %q after the warning cleared, want empty", got)
+	}
+}
+
+func TestAnAuthURLIsNeverClearedByAStatusRefresh(t *testing.T) {
+	// applyIPNStatus runs on every refresh. A snapshot that happens to carry no
+	// AuthURL must not wipe the one the popup is showing.
+	st := Status{State: "NeedsLogin", AuthURL: "https://login.tailscale.com/a/live"}
+	applyIPNStatus(&st, &ipnstate.Status{BackendState: "NeedsLogin"})
+	if st.AuthURL != "https://login.tailscale.com/a/live" {
+		t.Errorf("AuthURL = %q, want the live URL kept", st.AuthURL)
+	}
+	// A snapshot that carries one while logged out may set it.
+	empty := Status{State: "NeedsLogin"}
+	applyIPNStatus(&empty, &ipnstate.Status{BackendState: "NeedsLogin", AuthURL: "https://login.tailscale.com/a/fresh"})
+	if empty.AuthURL != "https://login.tailscale.com/a/fresh" {
+		t.Errorf("AuthURL = %q, want the snapshot's URL", empty.AuthURL)
+	}
+	// Once Running the URL is spent and must not come back.
+	running := Status{State: "Running"}
+	applyIPNStatus(&running, &ipnstate.Status{BackendState: "Running", AuthURL: "https://login.tailscale.com/a/spent"})
+	if running.AuthURL != "" {
+		t.Errorf("AuthURL = %q while Running, want empty", running.AuthURL)
+	}
+}
+
+func TestHealthDoesNotClearAnAuthURL(t *testing.T) {
+	n, _, _ := newTestNode(t)
+	ctx := context.Background()
+
+	n.apply(ctx, state(ipn.NeedsLogin))
+	url := "https://login.tailscale.com/a/deadbeef"
+	n.apply(ctx, ipn.Notify{BrowseToURL: &url})
+	n.apply(ctx, ipn.Notify{Health: unhealthy("not-in-map-poll", "Cannot reach the coordination server")})
+	if got := n.Status().AuthURL; got != url {
+		t.Errorf("AuthURL = %q after a health notification, want it untouched", got)
 	}
 }

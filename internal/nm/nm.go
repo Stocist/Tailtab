@@ -59,6 +59,8 @@ type Event struct {
 	SelfIP    string `json:"selfIP,omitempty"`
 	ProxyPort int    `json:"proxyPort,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// Warnings is the backend's unhealthy warnables, as text for the popup.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // StatusEvent returns an empty status event, ready to be filled in.

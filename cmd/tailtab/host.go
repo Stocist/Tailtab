@@ -48,6 +48,7 @@ func (b *nodeBackend) Status() *nm.Event {
 	ev.Hostname = st.Hostname
 	ev.SelfIP = st.SelfIP
 	ev.Error = st.Error
+	ev.Warnings = st.Warnings
 	return ev
 }
 

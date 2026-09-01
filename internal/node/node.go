@@ -9,13 +9,16 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"tailscale.com/client/local"
+	"tailscale.com/health"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/tsconst"
 	"tailscale.com/tsnet"
 )
 
@@ -32,6 +35,24 @@ type Status struct {
 	Hostname string
 	SelfIP   string
 	Error    string
+	// Warnings is the text of every unhealthy warnable the backend reports,
+	// sorted by warnable code. This is where a node that cannot reach the
+	// control plane says so: without it a blocked node looks identical to one
+	// simply waiting for a login.
+	Warnings []string
+}
+
+// equal reports whether two snapshots are the same. Status holds a slice, so it
+// cannot be compared with ==, and the change suppression in update depends on
+// this being right: a missed difference is a status the extension never sees.
+func (s Status) equal(o Status) bool {
+	return s.State == o.State &&
+		s.AuthURL == o.AuthURL &&
+		s.Tailnet == o.Tailnet &&
+		s.Hostname == o.Hostname &&
+		s.SelfIP == o.SelfIP &&
+		s.Error == o.Error &&
+		slices.Equal(s.Warnings, o.Warnings)
 }
 
 // Node wraps a tsnet.Server for a single browser profile.
@@ -49,6 +70,9 @@ type Node struct {
 	// that window starts another login session, each with its own URL, of
 	// which the popup would only ever show the last.
 	loginRequested bool
+	// loginWarning is the text of the login-state warnable, kept so it can be
+	// reapplied whenever the node is in NeedsLogin.
+	loginWarning string
 	// startLogin is lc.StartLoginInteractive once the node is up. It is a
 	// field so tests can drive the login path without a control server.
 	startLogin func(context.Context) error
@@ -151,12 +175,17 @@ func (n *Node) Start(profileID, browser string) error {
 	// Notify.NetMap is Windows-only as of v1.102.3 and is always nil here
 	// (research/tsnet.md §3), so nothing in this package may read it.
 	//
+	// NotifyInitialHealthState gets the current health with the first message,
+	// so a popup opened later sees warnings that were raised before it
+	// connected. Runtime health changes need no opt-in bit: the backend sends
+	// ipn.Notify{Health: ...} on every change (ipn/ipnlocal/local.go:1237).
+	//
 	// NotifyRateLimit is deliberately absent. At v1.102.3 it cannot be
 	// combined with NotifyInitialStatus: ipn.ValidateNotifyWatchOpt rejects
 	// the pair (ipn/backend.go, NotifyRateLimitIncompatibleBits) and the
 	// LocalAPI answers 400 Bad Request. Losing the rate limit only means more
 	// notifications, and update below drops the ones that change nothing.
-	w, err := lc.WatchIPNBus(ctx, ipn.NotifyInitialState|ipn.NotifyInitialStatus)
+	w, err := lc.WatchIPNBus(ctx, ipn.NotifyInitialState|ipn.NotifyInitialStatus|ipn.NotifyInitialHealthState)
 	if err != nil {
 		cancel()
 		return fmt.Errorf("watching the IPN bus: %w", err)
@@ -217,8 +246,16 @@ func (n *Node) apply(ctx context.Context, notify ipn.Notify) {
 			st.AuthURL = *notify.BrowseToURL
 			n.loginRequested = false // the request was answered
 		}
+		if notify.Health != nil {
+			st.Warnings, n.loginWarning = healthWarnings(notify.Health)
+		}
 		if notify.ErrMessage != nil {
 			st.Error = *notify.ErrMessage
+		} else if st.State == ipn.NeedsLogin.String() {
+			// A node that is logged out because it could not reach control
+			// looks exactly like one waiting for the user, unless the reason
+			// is carried through. This is that reason.
+			st.Error = n.loginWarning
 		}
 		if st.State != ipn.NeedsLogin.String() {
 			n.loginRequested = false // a new episode may need a new URL
@@ -293,6 +330,33 @@ func applyIPNStatus(st *Status, s *ipnstate.Status) {
 	}
 }
 
+// healthWarnings flattens a health snapshot into the text shown to the user,
+// sorted by warnable code so an unchanged set of warnings compares equal. It
+// also returns the login-state warnable's text, which is the one that explains
+// why a login is failing.
+func healthWarnings(hs *health.State) (warnings []string, loginWarning string) {
+	codes := make([]string, 0, len(hs.Warnings))
+	for code := range hs.Warnings {
+		codes = append(codes, string(code))
+	}
+	slices.Sort(codes)
+	for _, code := range codes {
+		w := hs.Warnings[health.WarnableCode(code)]
+		text := w.Text
+		if text == "" {
+			text = w.Title
+		}
+		if text == "" {
+			continue
+		}
+		warnings = append(warnings, text)
+		if code == tsconst.HealthWarnableLoginState {
+			loginWarning = text
+		}
+	}
+	return warnings, loginWarning
+}
+
 // update mutates the status under the lock and notifies the extension, but
 // only when something actually changed: the bus is unrate-limited, so most
 // notifications leave the extension-visible status untouched. It reports
@@ -303,7 +367,7 @@ func (n *Node) update(f func(*Status)) bool {
 	f(&n.st)
 	st := n.st
 	n.mu.Unlock()
-	if st == before {
+	if st.equal(before) {
 		return false
 	}
 	n.onChange(st)
