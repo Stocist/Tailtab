@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "tailtab",
+  "version": "0.1.0",
+  "description": "Give this browser profile its own Tailscale node, without a system-wide VPN.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "tailtab@stocist.dev",
+      "strict_min_version": "128.0"
+    }
+  },
+  "permissions": ["nativeMessaging", "proxy", "storage", "tabs"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "scripts": ["rules.js", "background.js"]
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "tailtab",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "tailtab",
+  "version": "0.1.0",
+  "description": "Give this browser profile its own Tailscale node, without a system-wide VPN.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA8ulFItdPwEt5XDJoeh8A51zcIgZyF/rjMdg9xkONKioF1hPbfVE+6mzdD/zQit1aEXobp+G+5GZCBGSGr2qF7VxTxjY7mxdIakAjyuGQGTaWosTHV3Cwl6W64tVL9TdrLLJw2QvVfwUhDycEfBtKOyTeqjd5fEqCsEiAzML9ubGd7Zye3VgnGXpe+LO7tDZvNZKg8TyEH9HBjTCoZX5VgnpJJ6yPubeQRoAV3b7khCbY3mKOfXNY06LDyKmnhLTk22pCTRwA9Gr36J1MPqcFnjr1j9Z35yW3JdH8um4Y2Zn4+OYGQYVJYIXli9SeC/W5TJ55VSGz45HYjY2U4prlcQIDAQAB",
+  "minimum_chrome_version": "116",
+  "permissions": ["nativeMessaging", "proxy", "storage", "tabs"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "tailtab",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
