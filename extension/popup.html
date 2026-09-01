@@ -21,6 +21,13 @@
           --accent: #7d9bff;
         }
       }
+      /* Any author-origin display rule below would otherwise beat the user
+         agent's [hidden] { display: none }, which is what left the empty
+         details grid on screen before login: dl is display: grid. One rule
+         here covers every element the popup hides. */
+      [hidden] {
+        display: none !important;
+      }
       body {
         width: 280px;
         margin: 0;
@@ -75,18 +82,12 @@
         color: var(--accent);
         font-weight: 600;
       }
-      button[hidden] {
-        display: none;
-      }
       .warn {
         margin-top: 10px;
         padding: 7px 9px;
         border-radius: 6px;
         border: 1px solid var(--line);
         color: var(--muted);
-      }
-      .warn[hidden] {
-        display: none;
       }
     </style>
   </head>
