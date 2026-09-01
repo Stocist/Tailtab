@@ -18,6 +18,8 @@ echo "building bin/tailtab"
 
 src="extension"
 dist="$src/dist"
+# Copied by name, so extension/test/ and anything else alongside the sources
+# never reaches a browser.
 shared=(background.js rules.js popup.html popup.js)
 
 rm -rf "$dist"
@@ -34,3 +36,4 @@ cp "$src/manifest.chromium.json" "$dist/chromium/manifest.json"
 cp "$src/manifest.firefox.json" "$dist/firefox/manifest.json"
 
 echo "built $dist/chromium and $dist/firefox"
+echo "run ./scripts/test.sh to check the host and the extension"

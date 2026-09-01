@@ -109,13 +109,15 @@ else.
 ## Development
 
 ```sh
-go build ./... && go vet ./... && go test ./...
-node scripts/test-extension.js
+./scripts/test.sh
 ```
 
-`scripts/test-extension.js` runs `extension/background.js` under a stubbed
-Chromium API with fake timers, so the proxy-configuration lifecycle, the
-reconnect backoff and the split-tunnel rules are testable without a browser.
+That runs `go vet`, `go test ./...`, and the extension's tests.
+`extension/test/background.test.js` loads `background.js` unmodified into a
+stubbed Chromium MV3 environment with fake timers, so the proxy-configuration
+lifecycle, the reconnect backoff and the split-tunnel rules are all testable
+without a browser. `build.sh` copies extension sources by name, so the test
+directory never ends up in a dist.
 
 The host can be driven by hand: it reads 4-byte little-endian length-prefixed
 JSON on stdin and writes the same framing on stdout.
