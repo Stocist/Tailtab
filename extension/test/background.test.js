@@ -44,6 +44,7 @@ function makeEnv(options) {
   };
 
   let nativePort = null;
+  const popupMessages = [];
   const chrome = {
     runtime: {
       lastError: null,
@@ -99,6 +100,19 @@ function makeEnv(options) {
   return {
     ctx: ctx,
     log: log,
+    // popupMessages holds everything the background pushed to an open popup.
+    popupMessages: popupMessages,
+    // openPopup connects a popup port, the way clicking the toolbar icon does.
+    openPopup() {
+      const port = {
+        name: "popup",
+        onMessage: mkEvent(),
+        onDisconnect: mkEvent(),
+        postMessage: (m) => popupMessages.push(m),
+      };
+      chrome.runtime.onConnect._fire(port);
+      return port;
+    },
     // status pushes one status event from the host.
     status(fields) {
       nativePort.onMessage._fire(Object.assign(
@@ -297,6 +311,69 @@ test("the split-tunnel rules and the generated PAC agree", () => {
     if (isTailnet(host, "tail4d5e6f.ts.net") !== false) throw new Error("predicate proxies " + JSON.stringify(host) + ", want direct");
     if (findProxy("http://" + host + "/", host) !== "DIRECT") throw new Error("PAC proxies " + JSON.stringify(host) + ", want direct");
   }
+});
+
+// The live A6 failure: the node was logged out because it could not reach the
+// control plane, and the popup showed a bare NeedsLogin with a Connect button
+// that looked dead. The reason has to reach the popup, and so does an auth URL
+// that only arrives after the popup is already open.
+test("a login URL that arrives after the popup is open reaches it", async () => {
+  const env = makeEnv();
+  await flush();
+  const popup = env.openPopup();
+  await flush();
+  if (env.popupMessages.length === 0) throw new Error("the popup got nothing when it connected");
+
+  env.status({ state: "NeedsLogin", proxyPort: 64378 });
+  await flush();
+  const before = env.popupMessages[env.popupMessages.length - 1];
+  if (before.status.authURL) throw new Error("an auth URL appeared before the host sent one");
+
+  // BrowseToURL lands on the bus seconds later and the host pushes it.
+  env.status({ state: "NeedsLogin", proxyPort: 64378, authURL: "https://login.tailscale.com/a/deadbeef" });
+  await flush();
+  const after = env.popupMessages[env.popupMessages.length - 1];
+  eq(after.status.authURL, "https://login.tailscale.com/a/deadbeef", "auth URL delivered to the open popup");
+  if (popup.name !== "popup") throw new Error("the harness connected the wrong port");
+});
+
+test("health warnings reach an open popup", async () => {
+  const env = makeEnv();
+  await flush();
+  env.openPopup();
+  await flush();
+
+  env.status({
+    state: "NeedsLogin",
+    proxyPort: 64378,
+    error: "You are logged out. The last login error was: all connection attempts failed",
+    warnings: [
+      "You are logged out. The last login error was: all connection attempts failed",
+      "Cannot reach the coordination server",
+    ],
+  });
+  await flush();
+
+  const last = env.popupMessages[env.popupMessages.length - 1];
+  eq(last.status.warnings.length, 2, "warnings delivered to the popup");
+  if (!last.status.error.includes("all connection attempts failed")) {
+    throw new Error("the login failure did not reach the popup: " + JSON.stringify(last.status.error));
+  }
+});
+
+test("a popup command reaches the host and the popup is answered", async () => {
+  const env = makeEnv();
+  await flush();
+  const popup = env.openPopup();
+  await flush();
+  env.status({ state: "NeedsLogin", proxyPort: 64378 });
+  await flush();
+
+  const before = env.popupMessages.length;
+  popup.onMessage._fire({ cmd: "up" });
+  await flush();
+  eq(env.log.sent[env.log.sent.length - 1], "up", "the up command reached the host");
+  if (env.popupMessages.length <= before) throw new Error("the popup was not answered after its command");
 });
 
 (async () => {
