@@ -28,6 +28,9 @@ const BUILD = "__TAILTAB_BUILD__";
 // How long a switch may take before the popup stops claiming it is happening.
 const SWITCH_TIMEOUT_MS = 20000;
 let switchTimer = null;
+// The login URL this popup already opened, so a re-render does not open it
+// twice.
+let openedLogin = "";
 const MAX_MACHINES = 8;
 // How many machines to show before anything is typed.
 const PREVIEW_MACHINES = 3;
@@ -94,14 +97,14 @@ function renderAccount(msg, st, running) {
   } else if (active) {
     name = accountLabel(active);
     tailnet = active.tailnet || st.tailnet || "";
+  } else if (st.state === "NeedsLogin" || st.authURL) {
+    name = "Not logged in";
   } else if (running || st.tailnet) {
     // The worker has no account list. That happens for a moment on startup,
     // and permanently when the worker is from an older build (see the build
     // check in render); either way the tailnet is the honest thing to show.
     name = st.hostname ? st.hostname : "This profile";
     tailnet = st.tailnet || "";
-  } else if (st.state === "NeedsLogin") {
-    name = "Not logged in";
   }
   setText("accountname", name);
   setText("accounttailnet", tailnet);
@@ -319,7 +322,19 @@ function render(msg) {
   const state = st.state || "Unknown";
   const running = state === "Running";
 
-  const warnings = Array.isArray(st.warnings) ? st.warnings : [];
+  let warnings = Array.isArray(st.warnings) ? st.warnings : [];
+  // A login URL means control was reached, so a "you are logged out" warning
+  // left over from the attempt before it (a switch cancels one) is history.
+  if (st.authURL) warnings = warnings.filter((w) => !/^You are logged out/.test(w));
+
+  // The user asked for a login (Connect while logged out, or Add account) and
+  // the URL has arrived: open it, rather than making them click again.
+  if (st.authURL && (awaitingLogin || switchingTo === "new") && !openedLogin) {
+    openedLogin = st.authURL;
+    awaitingLogin = false;
+    api.tabs.create({ url: st.authURL });
+    window.close();
+  }
   if (st.authURL || st.error || running || state === "Starting") {
     awaitingLogin = false;
   }

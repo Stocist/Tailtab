@@ -620,14 +620,18 @@ func TestAddAccountStartsAFreshProfileAndRestoresPrefs(t *testing.T) {
 		return &mp.Prefs, nil
 	}
 	n.st.AuthURL = "https://login.tailscale.com/a/stale"
+	n.st.Tailnet = "tail1a2b3c.ts.net"
+	n.st.Hostname = "mac-tailtab-edge"
+	n.st.Peers = []Peer{{Name: "server"}}
 	if err := n.AddAccount(); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := strings.Join(order, ","), "new,prefs"; got != want {
 		t.Fatalf("call order %q, want %q", got, want)
 	}
-	if n.Status().AuthURL != "" {
-		t.Fatal("the old account's login URL survived into the new profile")
+	st := n.Status()
+	if st.AuthURL != "" || st.Tailnet != "" || st.Hostname != "" || len(st.Peers) != 0 {
+		t.Fatalf("the old account's state survived into the new profile: %+v", st)
 	}
 }
 

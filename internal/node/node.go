@@ -655,13 +655,29 @@ func (n *Node) SwitchAccount(id string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	n.update(func(st *Status) {
-		st.AuthURL = ""
+		clearAccountState(st)
 		n.loginRequested = false
 	})
 	if err := sw(ctx, ipn.ProfileID(id)); err != nil {
 		return fmt.Errorf("switching account: %w", err)
 	}
 	return n.reapplyPrefs(ctx)
+}
+
+// clearAccountState drops everything in a status that belongs to the account
+// being left: its tailnet, its node identity, its peers and exit nodes, its
+// login URL and login error. Whatever the new profile has arrives from the bus.
+func clearAccountState(st *Status) {
+	st.AuthURL = ""
+	st.Error = ""
+	st.Tailnet = ""
+	st.Hostname = ""
+	st.SelfIP = ""
+	st.Peers = nil
+	st.ExitNodes = nil
+	st.ExitNode = ""
+	st.ExitNodeActive = false
+	st.Warnings = nil
 }
 
 // AddAccount starts a fresh login profile alongside the existing ones. The
@@ -676,7 +692,7 @@ func (n *Node) AddAccount() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	n.update(func(st *Status) {
-		st.AuthURL = ""
+		clearAccountState(st)
 		n.loginRequested = false
 	})
 	if err := add(ctx); err != nil {

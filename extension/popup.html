@@ -54,7 +54,7 @@
       #account .who { min-width: 0; flex: 1; }
       #accountname { display: block; font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       #accounttailnet { display: block; color: var(--muted); font-size: 11.5px; font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      #account .chev { color: var(--muted); font-size: 13px; flex: none; }
+      #account .chev { color: var(--muted); flex: none; }
       #toggle { width: 38px; height: 22px; border-radius: 11px; background: var(--muted); position: relative; flex: none; transition: background 0.15s; }
       #toggle.on { background: var(--ok); }
       #toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: left 0.15s; }
@@ -115,7 +115,7 @@
           <span id="accountname">tailtab</span>
           <span id="accounttailnet"></span>
         </span>
-        <span class="chev">▾</span>
+        <svg class="chev" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
       <button id="toggle" role="switch" aria-checked="false" title="Connect or disconnect"></button>
       <div id="accountmenu" role="menu" hidden></div>

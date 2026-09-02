@@ -525,6 +525,7 @@ function openPopupUI() {
 
   let backgroundPort = null;
   const sent = [];
+  const opened = [];
   const sandbox = {
     console: { log() {}, warn() {}, error() {} },
     setTimeout: () => 1,
@@ -545,7 +546,7 @@ function openPopupUI() {
           return backgroundPort;
         },
       },
-      tabs: { create() {} },
+      tabs: { create: (o) => { opened.push(o.url); } },
     },
   };
   sandbox.globalThis = sandbox;
@@ -563,6 +564,8 @@ function openPopupUI() {
     warningTexts: () => els.warnings.children.map((c) => c.textContent),
     // What the popup sent back to the background script.
     sent: sent,
+    // Tabs the popup opened.
+    opened: opened,
     // exitOptions describes the picker as the user would see it.
     exitOptions: () => els.exitnode.children.map((c) => ({
       value: c.value, label: c.textContent, disabled: c.disabled,
@@ -630,8 +633,9 @@ test("a login URL supersedes the login error on the hint line", () => {
   }
   eq(ui.els.hint.textContent, "Log in to connect this browser profile to a tailnet.", "hint line");
   if (ui.els.login.hidden) throw new Error("the Log in button is hidden while an auth URL exists");
-  // Still explained, one line down.
-  eq(ui.warningTexts(), [LOGIN_ERROR, "Cannot reach the coordination server"], "warnings list");
+  // The "logged out" warning is the attempt the URL has already moved past
+  // and is dropped; any other warning is still shown one line down.
+  eq(ui.warningTexts(), ["Cannot reach the coordination server"], "warnings list");
   if (ui.els.warnings.hidden) throw new Error("the warnings list is hidden");
 });
 
@@ -1381,8 +1385,17 @@ test("Add account asks the host and shows the login once it arrives", () => {
   ui.clickAddAccount();
   eq(ui.sent[ui.sent.length - 1], { cmd: "addaccount" }, "the command");
   eq(ui.els.accountname.textContent, "Switching…", "header while the host works");
-  ui.push({ connected: true, status: { state: "NeedsLogin", authURL: "https://login.tailscale.com/a/1", warnings: [], accounts: [] } });
+  ui.push({ connected: true, status: { state: "NeedsLogin", authURL: "https://login.tailscale.com/a/1", warnings: ["You are logged out. The last login error was: fetch control key: context canceled"], accounts: [] } });
+  eq(ui.opened, ["https://login.tailscale.com/a/1"], "the login page was opened without another click");
   eq(ui.els.state.textContent, "Not logged in", "pill once the new profile is ready");
+  eq(ui.warningTexts(), [], "the cancelled attempt's warning is not shown beside a working login");
+  eq(ui.els.accountname.textContent, "Not logged in", "the header does not show the old account or the OS hostname");
+});
+
+test("a login URL that nobody asked for is offered, not opened", () => {
+  const ui = openPopupUI();
+  ui.push({ connected: true, status: { state: "NeedsLogin", authURL: "https://login.tailscale.com/a/2", warnings: [], accounts: [] } });
+  eq(ui.opened, [], "nothing opened on its own");
   if (ui.els.login.hidden) throw new Error("the Log in button is hidden");
 });
 
