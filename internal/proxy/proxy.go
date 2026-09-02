@@ -315,11 +315,55 @@ func (s *Server) serve(dial DialFunc) error {
 			Username: User,
 			Password: s.token,
 		}
-		if err := ss.Serve(socksLn); err != nil && !errors.Is(err, net.ErrClosed) {
+		if err := ss.Serve(handshakeDeadlineListener{socksLn}); err != nil && !errors.Is(err, net.ErrClosed) {
 			log.Printf("SOCKS5 proxy stopped: %v", err)
 		}
 	}()
 	return nil
+}
+
+// socksHandshakeTimeout is how long a client has to get from connecting to the
+// end of the SOCKS5 handshake. It is the counterpart of the HTTP server's
+// ReadHeaderTimeout above: a local process must not be able to hold a socket
+// and a goroutine open by connecting and going quiet, and on this path it has
+// not authenticated yet. A variable so tests need not wait 30 seconds.
+var socksHandshakeTimeout = 30 * time.Second
+
+// handshakeDeadlineListener puts a deadline on every connection it accepts.
+// socks5.Server sets none of its own, and proxymux clears the deadline it used
+// to read the first byte, so without this there is nothing to close a stalled
+// handshake.
+type handshakeDeadlineListener struct{ net.Listener }
+
+func (l handshakeDeadlineListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	_ = c.SetDeadline(time.Now().Add(socksHandshakeTimeout))
+	return &socksConn{Conn: c}, nil
+}
+
+// socksConn drops that deadline once the handshake is over, so a tunnel that
+// has authenticated is not cut off mid-transfer.
+type socksConn struct {
+	net.Conn
+	// relaying is written once, by the server goroutine, before any relay
+	// goroutine exists.
+	relaying bool
+}
+
+// Write clears the deadline when the server sends the reply that ends the
+// handshake. Of the three replies in a SOCKS5 exchange that is the only one
+// four bytes or longer that starts with the version byte: the chosen method
+// and the authentication result are two bytes each (RFC 1928 §3 and §5,
+// RFC 1929 §2). A failure reply has the same shape, and closes straight after.
+func (c *socksConn) Write(b []byte) (int, error) {
+	if !c.relaying && len(b) >= 4 && b[0] == 5 {
+		c.relaying = true
+		_ = c.Conn.SetDeadline(time.Time{})
+	}
+	return c.Conn.Write(b)
 }
 
 // Port returns the bound TCP port.

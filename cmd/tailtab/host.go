@@ -31,12 +31,32 @@ func (b *nodeBackend) Init(profileID, browser string) error {
 	if err != nil {
 		return err
 	}
-	b.proxy = p
 	b.h.mu.Lock()
+	b.proxy = p
 	b.h.proxyPort = p.Port()
 	b.h.mu.Unlock()
+	// The bus starts inside node.Start above, so the suffix may have arrived
+	// while there was still no proxy to give it to. Take it from the node now;
+	// after this, statusChanged keeps the two in step.
+	p.SetMagicDNSSuffix(b.node.Status().Tailnet)
 	log.Printf("proxy listening on 127.0.0.1:%d", p.Port())
 	return nil
+}
+
+// statusChanged is the node's onChange. It keeps the proxy's guard in step with
+// the node's own MagicDNS suffix and then pushes the event to the extension.
+//
+// The suffix is set here, on the status path, rather than in Status(): reading
+// a status should not move the guard as a side effect, and every change to the
+// suffix arrives through this callback.
+func (b *nodeBackend) statusChanged(st node.Status) {
+	b.h.mu.Lock()
+	p := b.proxy
+	b.h.mu.Unlock()
+	// The suffix is not trusted on sight — SetMagicDNSSuffix validates it —
+	// and it is nil until the proxy is up, part-way through Init.
+	p.SetMagicDNSSuffix(st.Tailnet)
+	b.h.pushStatus()
 }
 
 func (b *nodeBackend) Status() *nm.Event {
@@ -45,13 +65,6 @@ func (b *nodeBackend) Status() *nm.Event {
 	ev.State = st.State
 	ev.AuthURL = st.AuthURL
 	ev.Tailnet = st.Tailnet
-	// The proxy's guard has to know this node's own MagicDNS suffix, which is
-	// not under .ts.net when the tailnet uses a custom domain (R1). Status
-	// carries the suffix, not the tailnet's display name: node.applyIPNStatus
-	// reads ipnstate.Status.CurrentTailnet.MagicDNSSuffix and falls back to the
-	// top-level MagicDNSSuffix. Pushing it here means a rename reaches the
-	// guard as soon as it reaches the popup.
-	b.proxy.SetMagicDNSSuffix(st.Tailnet)
 	ev.Hostname = st.Hostname
 	ev.SelfIP = st.SelfIP
 	ev.Error = st.Error
@@ -120,7 +133,13 @@ func runHost() {
 		os.Exit(1)
 	}
 	h := &host{codec: nm.NewCodec(os.Stdin, os.Stdout), proxyToken: token}
-	h.be = &nodeBackend{h: h, node: node.New(func(node.Status) { h.pushStatus() })}
+	// The node's status carries this node's own MagicDNS suffix — the suffix,
+	// from ipnstate.Status.CurrentTailnet.MagicDNSSuffix, never the tailnet's
+	// display name — which the proxy's guard needs so a tailnet on a custom
+	// domain is served rather than refused (R1).
+	be := &nodeBackend{h: h}
+	be.node = node.New(be.statusChanged)
+	h.be = be
 
 	err = h.loop()
 	h.close()

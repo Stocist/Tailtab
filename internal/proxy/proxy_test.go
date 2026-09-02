@@ -816,3 +816,95 @@ func TestARefusedSuffixLeavesTheRuleAlone(t *testing.T) {
 		t.Errorf("MagicDNSSuffix() = %q, want the trimmed good suffix", got)
 	}
 }
+
+// ------------------------------------------ NIT 2, the handshake deadline
+
+// A client that connects and goes quiet has not authenticated yet, and must not
+// be able to hold a socket and a goroutine open indefinitely.
+func TestAStalledSOCKSHandshakeIsClosed(t *testing.T) {
+	old := socksHandshakeTimeout
+	socksHandshakeTimeout = 250 * time.Millisecond
+	defer func() { socksHandshakeTimeout = old }()
+
+	p, err := start(func(context.Context, string, string) (net.Conn, error) {
+		return nil, fmt.Errorf("no node")
+	}, testToken)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer p.Close()
+
+	conn, method := socks5Greet(t, p.Port(), socksPassword)
+	if method != socksPassword {
+		t.Fatalf("the server chose method %d, want password authentication", method)
+	}
+	// Never send the credential. The server should give up on its own.
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	start := time.Now()
+	if _, err := io.ReadFull(conn, make([]byte, 1)); err == nil {
+		t.Fatal("the stalled handshake was answered rather than dropped")
+	}
+	if waited := time.Since(start); waited > 3*time.Second {
+		t.Errorf("the stalled handshake was still open after %v", waited)
+	}
+}
+
+// The deadline is for the handshake, not the tunnel: a transfer that has
+// authenticated must not be cut off part-way through.
+func TestAnAuthenticatedTunnelOutlivesTheHandshakeDeadline(t *testing.T) {
+	old := socksHandshakeTimeout
+	socksHandshakeTimeout = 250 * time.Millisecond
+	defer func() { socksHandshakeTimeout = old }()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() { io.Copy(c, c); c.Close() }()
+		}
+	}()
+
+	d := &recordingDialer{target: ln.Addr().String()}
+	p, err := start(d.dial, testToken)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer p.Close()
+
+	conn, method := socks5Greet(t, p.Port(), socksPassword)
+	if method != socksPassword {
+		t.Fatalf("the server chose method %d, want password authentication", method)
+	}
+	if status := socks5Auth(t, conn, User, testToken); status != 0 {
+		t.Fatalf("authentication failed with status %d", status)
+	}
+	if code := socks5Request(t, conn, "wiki", 80); code != 0 {
+		t.Fatalf("CONNECT reply code %d, want 0", code)
+	}
+	// The bound-address part of the reply, which socks5Request leaves unread:
+	// one address type byte was consumed with the reply, so read the IPv4
+	// address and port that follow.
+	if _, err := io.ReadFull(conn, make([]byte, 6)); err != nil {
+		t.Fatalf("reading the bound address: %v", err)
+	}
+
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	time.Sleep(3 * socksHandshakeTimeout)
+	if _, err := conn.Write([]byte("ping")); err != nil {
+		t.Fatalf("writing after the handshake deadline would have fired: %v", err)
+	}
+	got := make([]byte, 4)
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatalf("reading the echo after the handshake deadline would have fired: %v", err)
+	}
+	if string(got) != "ping" {
+		t.Errorf("the tunnel echoed %q, want %q", got, "ping")
+	}
+}
