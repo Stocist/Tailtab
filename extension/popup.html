@@ -87,7 +87,9 @@
       .row .k { color: var(--muted); font-size: 12.5px; flex: none; }
       .row .v { font-family: var(--mono); font-size: 12.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       button.v.copy::after { content: " ⧉"; color: var(--muted); }
-      select { font: inherit; font-size: 13px; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; max-width: 60%; }
+      /* The native select arrow sits hard against the edge; draw our own
+         chevron so it can breathe, matching the account control's. */
+      select { font: inherit; font-size: 13px; color: var(--ink); background-color: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 5px 30px 5px 10px; max-width: 60%; appearance: none; -webkit-appearance: none; background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 16 16'><path d='M4 6l4 4 4-4' fill='none' stroke='%239aa3ad' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/></svg>"); background-repeat: no-repeat; background-position: right 10px center; }
 
       /* machines */
       #search { width: 100%; font: inherit; font-size: 14px; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; }
