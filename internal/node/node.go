@@ -39,6 +39,25 @@ type ExitNode struct {
 	OS     string
 }
 
+// Account is one Tailscale login profile held by this node. Several accounts
+// live in one node's state; switching between them is a LocalAPI call, and
+// each keeps its own node key on its own tailnet.
+type Account struct {
+	ID      string
+	Name    string
+	Tailnet string
+	Active  bool
+}
+
+// Peer is one machine on the current tailnet, for the popup's search.
+type Peer struct {
+	Name    string
+	DNSName string
+	IP      string
+	Online  bool
+	OS      string
+}
+
 // Status is a snapshot of the node, shaped for the extension.
 type Status struct {
 	// State is an ipn.State string, passed through verbatim rather than
@@ -67,6 +86,11 @@ type Status struct {
 	// control plane says so: without it a blocked node looks identical to one
 	// simply waiting for a login.
 	Warnings []string
+	// Accounts is every login profile in this node's state, sorted by name,
+	// with the active one marked. Empty until a first login has completed.
+	Accounts []Account
+	// Peers is every machine on the current tailnet, sorted by name.
+	Peers []Peer
 }
 
 // equal reports whether two snapshots are the same. Status holds a slice, so it
@@ -82,7 +106,9 @@ func (s Status) equal(o Status) bool {
 		s.ExitNode == o.ExitNode &&
 		s.ExitNodeActive == o.ExitNodeActive &&
 		slices.Equal(s.ExitNodes, o.ExitNodes) &&
-		slices.Equal(s.Warnings, o.Warnings)
+		slices.Equal(s.Warnings, o.Warnings) &&
+		slices.Equal(s.Accounts, o.Accounts) &&
+		slices.Equal(s.Peers, o.Peers)
 }
 
 // Node wraps a tsnet.Server for a single browser profile.
@@ -112,6 +138,11 @@ type Node struct {
 	readStatus func(context.Context) (*ipnstate.Status, error)
 	// editPrefs is lc.EditPrefs, a field for the same reason.
 	editPrefs func(context.Context, *ipn.MaskedPrefs) (*ipn.Prefs, error)
+	// readProfiles, switchProfile and newProfile are lc.ProfileStatus,
+	// lc.SwitchProfile and lc.SwitchToEmptyProfile: the account switcher.
+	readProfiles  func(context.Context) (ipn.LoginProfile, []ipn.LoginProfile, error)
+	switchProfile func(context.Context, ipn.ProfileID) error
+	newProfile    func(context.Context) error
 	// hostname is the control-plane name this node was started with. tsnet
 	// applies it once, at Start; a logout resets the prefs to their defaults,
 	// so it has to be put back before the next login or the node registers
@@ -214,6 +245,9 @@ func (n *Node) Start(profileID, browser string) error {
 	n.startLogin = lc.StartLoginInteractive
 	n.readStatus = lc.Status
 	n.editPrefs = lc.EditPrefs
+	n.readProfiles = lc.ProfileStatus
+	n.switchProfile = lc.SwitchProfile
+	n.newProfile = lc.SwitchToEmptyProfile
 	n.mu.Unlock()
 
 	// NotifyInitialStatus is what carries the tailnet name and self IP:
@@ -357,7 +391,65 @@ func (n *Node) refresh(ctx context.Context) {
 		log.Printf("reading node status: %v", err)
 		return
 	}
-	n.update(func(st *Status) { applyIPNStatus(st, s) })
+	n.mu.Lock()
+	profiles := n.readProfiles
+	n.mu.Unlock()
+	var accounts []Account
+	haveAccounts := false
+	if profiles != nil {
+		current, all, perr := profiles(ctx)
+		if perr != nil {
+			log.Printf("reading login profiles: %v", perr)
+		} else {
+			accounts = accountsFrom(current, all)
+			haveAccounts = true
+		}
+	}
+	n.update(func(st *Status) {
+		applyIPNStatus(st, s)
+		if haveAccounts {
+			st.Accounts = accounts
+		}
+	})
+}
+
+// accountsFrom shapes the login profiles for the popup. A profile only exists
+// once a login has completed (PROFILES.md §2.1), so a node that has never
+// logged in reports none.
+func accountsFrom(current ipn.LoginProfile, all []ipn.LoginProfile) []Account {
+	accounts := make([]Account, 0, len(all))
+	for _, p := range all {
+		accounts = append(accounts, Account{
+			ID:      string(p.ID),
+			Name:    p.Name,
+			Tailnet: strings.TrimSuffix(p.NetworkProfile.MagicDNSName, "."),
+			Active:  p.ID != "" && p.ID == current.ID,
+		})
+	}
+	slices.SortFunc(accounts, func(a, b Account) int { return strings.Compare(a.Name, b.Name) })
+	return accounts
+}
+
+// applyPeers lists the tailnet's machines from a status snapshot.
+func applyPeers(st *Status, s *ipnstate.Status) {
+	peers := make([]Peer, 0, len(s.Peer))
+	for _, p := range s.Peer {
+		if p == nil {
+			continue
+		}
+		dns := strings.TrimSuffix(p.DNSName, ".")
+		name, _, _ := strings.Cut(dns, ".")
+		if name == "" {
+			name = p.HostName
+		}
+		peer := Peer{Name: name, DNSName: dns, Online: p.Online, OS: p.OS}
+		if len(p.TailscaleIPs) > 0 {
+			peer.IP = p.TailscaleIPs[0].String()
+		}
+		peers = append(peers, peer)
+	}
+	slices.SortFunc(peers, func(a, b Peer) int { return strings.Compare(a.Name, b.Name) })
+	st.Peers = peers
 }
 
 // applyIPNStatus copies the fields the extension needs out of an ipnstate
@@ -391,6 +483,7 @@ func applyIPNStatus(st *Status, s *ipnstate.Status) {
 		st.SelfIP = s.TailscaleIPs[0].String()
 	}
 	applyExitNodes(st, s)
+	applyPeers(st, s)
 }
 
 // applyExitNodes copies the exit-node offers and the state of the selected one
@@ -535,6 +628,54 @@ func (n *Node) SetExitNode(id string) error {
 	// The prefs notification that follows carries the new selection, and the
 	// refresh it triggers says whether the node is actually usable.
 	return nil
+}
+
+// SwitchAccount makes another login profile the active one. The switch resets
+// the prefs (PROFILES.md §3), so the node's own are put back straight after;
+// with WantRunning restored a logged-in profile comes up on its own, and a
+// profile that needs a login goes through the usual NeedsLogin path.
+func (n *Node) SwitchAccount(id string) error {
+	n.mu.Lock()
+	sw := n.switchProfile
+	known := slices.ContainsFunc(n.st.Accounts, func(a Account) bool { return a.ID == id })
+	n.mu.Unlock()
+	if sw == nil {
+		return errors.New("node is not started")
+	}
+	if id == "" || !known {
+		return fmt.Errorf("%q is not an account this node holds", id)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	n.update(func(st *Status) {
+		st.AuthURL = ""
+		n.loginRequested = false
+	})
+	if err := sw(ctx, ipn.ProfileID(id)); err != nil {
+		return fmt.Errorf("switching account: %w", err)
+	}
+	return n.reapplyPrefs(ctx)
+}
+
+// AddAccount starts a fresh login profile alongside the existing ones. The
+// node lands in NeedsLogin, and the login URL follows from the bus as usual.
+func (n *Node) AddAccount() error {
+	n.mu.Lock()
+	add := n.newProfile
+	n.mu.Unlock()
+	if add == nil {
+		return errors.New("node is not started")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	n.update(func(st *Status) {
+		st.AuthURL = ""
+		n.loginRequested = false
+	})
+	if err := add(ctx); err != nil {
+		return fmt.Errorf("adding an account: %w", err)
+	}
+	return n.reapplyPrefs(ctx)
 }
 
 // Logout drops the node's credentials. The bus then reports NeedsLogin, which

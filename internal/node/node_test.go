@@ -548,3 +548,100 @@ func TestLoginWithoutAClientStillWorksInTests(t *testing.T) {
 		t.Fatalf("logins = %d, want 1", *logins)
 	}
 }
+
+func TestAccountsComeFromTheLoginProfiles(t *testing.T) {
+	current := ipn.LoginProfile{ID: "p1", Name: "stocist@github", NetworkProfile: ipn.NetworkProfile{MagicDNSName: "tail1a2b3c.ts.net."}}
+	all := []ipn.LoginProfile{
+		{ID: "p2", Name: "bob@example.com", NetworkProfile: ipn.NetworkProfile{MagicDNSName: "tail4d5e6f.ts.net"}},
+		current,
+	}
+	got := accountsFrom(current, all)
+	want := []Account{
+		{ID: "p2", Name: "bob@example.com", Tailnet: "tail4d5e6f.ts.net"},
+		{ID: "p1", Name: "stocist@github", Tailnet: "tail1a2b3c.ts.net", Active: true},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("accounts = %+v, want %+v", got, want)
+	}
+	// A node that has never logged in: no profiles, and an empty current one
+	// must not be marked active by an empty-ID match.
+	if got := accountsFrom(ipn.LoginProfile{}, nil); len(got) != 0 {
+		t.Fatalf("accounts before any login = %+v, want none", got)
+	}
+}
+
+// PROFILES.md §3: a switch wipes the prefs and tsnet only sets its own at
+// Start, so the node's hostname and WantRunning go back right after.
+func TestSwitchAccountValidatesAndRestoresPrefs(t *testing.T) {
+	n, _, _ := newTestNode(t)
+	n.hostname = "mac-tailtab-edge"
+	n.st.Accounts = []Account{{ID: "p1", Name: "a", Active: true}, {ID: "p2", Name: "b"}}
+	var order []string
+	n.switchProfile = func(_ context.Context, id ipn.ProfileID) error {
+		order = append(order, "switch:"+string(id))
+		return nil
+	}
+	n.editPrefs = func(_ context.Context, mp *ipn.MaskedPrefs) (*ipn.Prefs, error) {
+		if mp.HostnameSet && mp.Prefs.Hostname == "mac-tailtab-edge" && mp.WantRunningSet && mp.Prefs.WantRunning {
+			order = append(order, "prefs")
+		} else {
+			order = append(order, "prefs:wrong")
+		}
+		return &mp.Prefs, nil
+	}
+	if err := n.SwitchAccount("nope"); err == nil {
+		t.Fatal("an unknown profile id was accepted")
+	}
+	if err := n.SwitchAccount(""); err == nil {
+		t.Fatal("an empty profile id was accepted")
+	}
+	if len(order) != 0 {
+		t.Fatalf("a refused switch still called the backend: %v", order)
+	}
+	if err := n.SwitchAccount("p2"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(order, ","), "switch:p2,prefs"; got != want {
+		t.Fatalf("call order %q, want %q", got, want)
+	}
+}
+
+func TestAddAccountStartsAFreshProfileAndRestoresPrefs(t *testing.T) {
+	n, _, _ := newTestNode(t)
+	n.hostname = "mac-tailtab-edge"
+	var order []string
+	n.newProfile = func(context.Context) error {
+		order = append(order, "new")
+		return nil
+	}
+	n.editPrefs = func(_ context.Context, mp *ipn.MaskedPrefs) (*ipn.Prefs, error) {
+		order = append(order, "prefs")
+		return &mp.Prefs, nil
+	}
+	n.st.AuthURL = "https://login.tailscale.com/a/stale"
+	if err := n.AddAccount(); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(order, ","), "new,prefs"; got != want {
+		t.Fatalf("call order %q, want %q", got, want)
+	}
+	if n.Status().AuthURL != "" {
+		t.Fatal("the old account's login URL survived into the new profile")
+	}
+}
+
+func TestPeersComeFromTheStatus(t *testing.T) {
+	st := &Status{}
+	s := &ipnstate.Status{Peer: map[key.NodePublic]*ipnstate.PeerStatus{
+		key.NewNode().Public(): {HostName: "PC", DNSName: "pc.tail1a2b3c.ts.net.", Online: false, OS: "windows", TailscaleIPs: []netip.Addr{netip.MustParseAddr("100.80.1.94")}},
+		key.NewNode().Public(): {HostName: "server", DNSName: "server.tail1a2b3c.ts.net.", Online: true, OS: "linux", TailscaleIPs: []netip.Addr{netip.MustParseAddr("100.80.1.7")}},
+	}}
+	applyPeers(st, s)
+	want := []Peer{
+		{Name: "pc", DNSName: "pc.tail1a2b3c.ts.net", IP: "100.80.1.94", OS: "windows"},
+		{Name: "server", DNSName: "server.tail1a2b3c.ts.net", IP: "100.80.1.7", Online: true, OS: "linux"},
+	}
+	if !slices.Equal(st.Peers, want) {
+		t.Fatalf("peers = %+v, want %+v", st.Peers, want)
+	}
+}

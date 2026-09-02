@@ -34,6 +34,12 @@ const (
 	// CmdExitNode selects an exit node by stable ID, or clears the selection
 	// when ID is empty.
 	CmdExitNode Command = "exitnode"
+	// CmdSwitch switches to another logged-in account (a Tailscale login
+	// profile) by its profile ID.
+	CmdSwitch Command = "switch"
+	// CmdAddAccount starts a login for a new account, keeping the existing
+	// ones.
+	CmdAddAccount Command = "addaccount"
 )
 
 // Request is a message from the browser extension. Nothing in it is trusted.
@@ -47,10 +53,30 @@ type Request struct {
 	// Browser is "zen" or "edge". It is only used to build a node hostname.
 	Browser string `json:"browser,omitempty"`
 
-	// ID is the exit node's stable node ID, for CmdExitNode. Empty selects no
-	// exit node. It is checked against the offers the node reported before it
-	// is used.
+	// ID is the exit node's stable node ID for CmdExitNode (empty selects no
+	// exit node), or the account's profile ID for CmdSwitch. Either is checked
+	// against what the node reported before it is used.
 	ID string `json:"id,omitempty"`
+}
+
+// Account is one Tailscale login profile held by this node, for the account
+// switcher in the popup.
+type Account struct {
+	ID string `json:"id"`
+	// Name is the login name, e.g. "user@github".
+	Name string `json:"name"`
+	// Tailnet is the MagicDNS suffix of that account's tailnet.
+	Tailnet string `json:"tailnet,omitempty"`
+	Active  bool   `json:"active"`
+}
+
+// Peer is one machine on the tailnet, for the popup's machine search.
+type Peer struct {
+	Name    string `json:"name"`
+	DNSName string `json:"dnsName,omitempty"`
+	IP      string `json:"ip,omitempty"`
+	Online  bool   `json:"online"`
+	OS      string `json:"os,omitempty"`
 }
 
 // ExitNode is one exit-node offer, as the popup's picker needs it.
@@ -93,6 +119,11 @@ type Event struct {
 	ExitNodeActive bool `json:"exitNodeActive,omitempty"`
 	// Warnings is the backend's unhealthy warnables, as text for the popup.
 	Warnings []string `json:"warnings,omitempty"`
+	// Accounts is every login profile this node holds, with the active one
+	// marked. Empty until the first login has completed.
+	Accounts []Account `json:"accounts,omitempty"`
+	// Peers is the tailnet's machines, for the popup's search box.
+	Peers []Peer `json:"peers,omitempty"`
 }
 
 // StatusEvent returns an empty status event, ready to be filled in.

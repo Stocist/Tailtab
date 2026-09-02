@@ -519,7 +519,7 @@ function openPopupUI() {
     el.addEventListener = (name, fn) => { el.listeners[name] = fn; };
     return el;
   };
-  for (const id of ["state", "hint", "warnings", "details", "tailnet", "hostname", "selfip", "port", "login", "connect", "disconnect", "logout", "warning", "exitrow", "exitnode"]) {
+  for (const id of ["state", "hint", "warnings", "details", "tailnet", "hostname", "selfip", "port", "login", "connect", "disconnect", "logout", "warning", "exitrow", "exitnode", "account", "accountname", "accounttailnet", "accountmenu", "avatar", "toggle", "search", "machines", "machinesec", "copied"]) {
     els[id] = makeEl();
   }
 
@@ -531,7 +531,7 @@ function openPopupUI() {
     clearTimeout: () => {},
     window: { close() {} },
     document: {
-      getElementById: (id) => els[id],
+      getElementById: (id) => els[id] || (els[id] = makeEl()),
       createElement: () => makeEl(),
     },
     chrome: {
@@ -570,6 +570,37 @@ function openPopupUI() {
       if (!els.exitnode.listeners.change) throw new Error("the picker has no change listener");
       els.exitnode.listeners.change({ target: els.exitnode });
     },
+    // accountItems describes the account menu: one entry per held account,
+    // then the divider and the "Add account" button.
+    accountItems: () => els.accountmenu.children.map((c) => ({
+      label: c.children.length ? c.children[0].children[0].textContent : c.textContent,
+      className: c.className,
+      id: c.accountID,
+    })),
+    // chooseAccount clicks a menu entry.
+    chooseAccount(id) {
+      const item = els.accountmenu.children.find((c) => c.accountID === id);
+      if (!item) throw new Error("no menu entry for " + id);
+      item.listeners.click();
+    },
+    clickAddAccount() {
+      const add = els.accountmenu.children.find((c) => c.className === "add");
+      if (!add) throw new Error("no Add account entry");
+      add.listeners.click();
+    },
+    clickToggle() {
+      els.toggle.listeners.click();
+    },
+    // search types into the machine box.
+    search(q) {
+      els.search.value = q;
+      els.search.listeners.input();
+    },
+    machineRows: () => els.machines.children.map((li) => ({
+      name: li.children.length ? li.children[0].textContent : li.textContent,
+      ip: li.children.length > 1 ? li.children[1].textContent : "",
+      className: li.children.length ? li.children[0].className : li.className,
+    })),
   };
 }
 
@@ -1285,6 +1316,113 @@ test("the heartbeat alarm reconnects a dead host", async () => {
   eq(env.log.connects, before + 1, "another extension's alarm name is ignored");
 });
 
+
+// The header is the account switcher: the active profile's name and tailnet,
+// a menu of every held account, and "Add account". Nothing in it is guessed
+// from a click; the active account is whatever the host last reported.
+test("the account switcher lists held accounts and switches on click", () => {
+  const ui = openPopupUI();
+  ui.push({
+    connected: true,
+    status: Object.assign({ warnings: [] }, EXIT_RUNNING, {
+      state: "Running", exitNode: "", exitNodeActive: false,
+      accounts: [
+        { id: "p1", name: "stocist@github", tailnet: "tail1a2b3c.ts.net", active: true },
+        { id: "p2", name: "bob@example.com", tailnet: "tail4d5e6f.ts.net", active: false },
+      ],
+    }),
+  });
+  eq(ui.els.accountname.textContent, "stocist@github", "header name");
+  eq(ui.els.accounttailnet.textContent, "tail1a2b3c.ts.net", "header tailnet");
+  eq(ui.accountItems().map((i) => i.label), ["stocist@github", "bob@example.com", "", "+ Add account…"], "menu entries");
+  eq(ui.accountItems()[0].className, "item on", "the active account is marked");
+
+  ui.chooseAccount("p2");
+  eq(ui.sent[ui.sent.length - 1], { cmd: "switch", id: "p2" }, "the switch command");
+  eq(ui.els.state.textContent, "Switching account…", "the pill while the host works");
+
+  // The host reports the other account active: the switch is over.
+  ui.push({
+    connected: true,
+    status: Object.assign({ warnings: [] }, EXIT_RUNNING, {
+      state: "Running", exitNode: "", exitNodeActive: false, tailnet: "tail4d5e6f.ts.net",
+      accounts: [
+        { id: "p1", name: "stocist@github", tailnet: "tail1a2b3c.ts.net", active: false },
+        { id: "p2", name: "bob@example.com", tailnet: "tail4d5e6f.ts.net", active: true },
+      ],
+    }),
+  });
+  eq(ui.els.accountname.textContent, "bob@example.com", "header after the switch");
+  eq(ui.els.state.textContent, "Connected", "pill after the switch");
+});
+
+test("choosing the active account again does nothing", () => {
+  const ui = openPopupUI();
+  ui.push({
+    connected: true,
+    status: { state: "Running", tailnet: "t.ts.net", proxyPort: 1, warnings: [],
+      accounts: [{ id: "p1", name: "a@b", tailnet: "t.ts.net", active: true }] },
+  });
+  const before = ui.sent.length;
+  ui.chooseAccount("p1");
+  eq(ui.sent.length, before, "nothing sent");
+});
+
+test("Add account asks the host and shows the login once it arrives", () => {
+  const ui = openPopupUI();
+  ui.push({
+    connected: true,
+    status: { state: "Running", tailnet: "t.ts.net", proxyPort: 1, warnings: [],
+      accounts: [{ id: "p1", name: "a@b", tailnet: "t.ts.net", active: true }] },
+  });
+  ui.clickAddAccount();
+  eq(ui.sent[ui.sent.length - 1], { cmd: "addaccount" }, "the command");
+  eq(ui.els.accountname.textContent, "Switching…", "header while the host works");
+  ui.push({ connected: true, status: { state: "NeedsLogin", authURL: "https://login.tailscale.com/a/1", warnings: [], accounts: [] } });
+  eq(ui.els.state.textContent, "Not logged in", "pill once the new profile is ready");
+  if (ui.els.login.hidden) throw new Error("the Log in button is hidden");
+});
+
+test("a node that never logged in has no accounts and says so", () => {
+  const ui = openPopupUI();
+  ui.push({ connected: true, status: { state: "NeedsLogin", warnings: [], accounts: [] } });
+  eq(ui.els.accountname.textContent, "Not logged in", "header");
+  eq(ui.accountItems().map((i) => i.label), ["+ Add account…"], "menu has only Add account");
+});
+
+test("the machine search filters peers and offers their addresses", () => {
+  const ui = openPopupUI();
+  ui.push({
+    connected: true,
+    status: { state: "Running", tailnet: "t.ts.net", proxyPort: 1, warnings: [], accounts: [],
+      peers: [
+        { name: "server", dnsName: "server.t.ts.net", ip: "100.80.1.7", online: true },
+        { name: "relay", dnsName: "relay.t.ts.net", ip: "100.80.1.65", online: true },
+        { name: "pc", dnsName: "pc.t.ts.net", ip: "100.80.1.94", online: false },
+      ] },
+  });
+  eq(ui.els.machinesec.hidden, false, "the search box is shown when there are peers");
+  eq(ui.machineRows(), [], "nothing listed until something is typed");
+  ui.search("ser");
+  eq(ui.machineRows().map((r) => r.name + " " + r.ip), ["server 100.80.1.7"], "a name match");
+  ui.search("100.66");
+  eq(ui.machineRows().map((r) => r.name), ["pc"], "an address match");
+  eq(ui.machineRows()[0].className, "name off", "an offline peer is marked");
+  ui.search("zzz");
+  eq(ui.machineRows().map((r) => r.name), ["No machine matches"], "no match");
+});
+
+test("the toggle disconnects a running node and connects a stopped one", () => {
+  const ui = openPopupUI();
+  ui.push({ connected: true, status: { state: "Running", tailnet: "t.ts.net", proxyPort: 1, warnings: [], accounts: [] } });
+  eq(ui.els.toggle.className, "on", "toggle on while Running");
+  ui.clickToggle();
+  eq(ui.sent[ui.sent.length - 1], { cmd: "down" }, "down");
+  ui.push({ connected: true, status: { state: "Stopped", warnings: [], accounts: [] } });
+  eq(ui.els.toggle.className, "", "toggle off while Stopped");
+  ui.clickToggle();
+  eq(ui.sent[ui.sent.length - 1], { cmd: "up" }, "up");
+});
 (async () => {
   let failed = 0;
   for (const t of tests) {

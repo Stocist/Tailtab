@@ -1,6 +1,6 @@
 // tailtab popup. Everything shown here is derived from the last status event
 // the background script received: the popup keeps no idea of its own about
-// whether the node is up.
+// whether the node is up, which account is active, or where traffic goes.
 
 "use strict";
 
@@ -20,6 +20,11 @@ let logoutArmed = false;
 // URL or an error. Asking control for a URL can take a while, and can fail
 // silently when the network is blocked, which made the button look dead.
 let awaitingLogin = false;
+// Set when an account switch or "Add account" was asked for, cleared when the
+// host reports a state that shows it happened.
+let switchingTo = "";
+let menuOpen = false;
+const MAX_MACHINES = 8;
 
 // A state the node reports that is worth explaining.
 const HINTS = {
@@ -30,6 +35,16 @@ const HINTS = {
   NoState: "The node has not started yet.",
   InUseOtherUser: "Another user is signed in to this node.",
   Disconnected: "The tailtab host is not running.",
+};
+
+// What the state pill says for a state other than Running.
+const LABELS = {
+  NeedsLogin: "Not logged in",
+  NeedsMachineAuth: "Needs approval",
+  Starting: "Connecting…",
+  Stopped: "Disconnected",
+  NoState: "Starting…",
+  Disconnected: "Host not running",
 };
 
 port.onMessage.addListener(render);
@@ -44,6 +59,97 @@ function runningStateLine(msg, st) {
     return "Connected via " + ((chosen && chosen.name) || "exit node");
   }
   return "Connected";
+}
+
+// pillKind picks the colour: ok when routing works, bad when browsing is
+// blocked, warn for anything half-way, off when nothing is running.
+function pillKind(msg, st, running) {
+  if (switchingTo) return "warn";
+  if (!running) return st.state === "Starting" ? "warn" : "off";
+  if (msg.proxyProblem) return "warn";
+  if (st.exitNode && !st.exitNodeActive) return "bad";
+  return "ok";
+}
+
+function setText(id, text) {
+  el(id).textContent = text;
+}
+
+// renderAccount fills the header. The name is the active login profile's; a
+// node that has never completed a login has no profiles yet, and says so.
+function renderAccount(msg, st, running) {
+  const accounts = Array.isArray(st.accounts) ? st.accounts : [];
+  const active = accounts.find((a) => a.active);
+  let name = "tailtab";
+  let tailnet = "";
+  if (switchingTo) {
+    name = "Switching…";
+    tailnet = switchingTo === "new" ? "adding an account" : "";
+  } else if (active) {
+    name = active.name || "Signed in";
+    tailnet = active.tailnet || st.tailnet || "";
+  } else if (running || st.tailnet) {
+    name = "Signed in";
+    tailnet = st.tailnet || "";
+  } else if (st.state === "NeedsLogin") {
+    name = "Not logged in";
+  }
+  setText("accountname", name);
+  setText("accounttailnet", tailnet);
+  setText("avatar", (name && /^[a-z0-9]/i.test(name) ? name[0] : "t").toUpperCase());
+  el("account").disabled = !msg.connected;
+
+  // The menu: every held account, then "Add account…".
+  const menu = el("accountmenu");
+  menu.textContent = "";
+  for (const account of accounts) {
+    const item = document.createElement("button");
+    item.className = "item" + (account.active ? " on" : "");
+    item.setAttribute && item.setAttribute("role", "menuitem");
+    const who = document.createElement("span");
+    const b = document.createElement("b");
+    b.textContent = account.name || "(unnamed)";
+    const t = document.createElement("span");
+    t.textContent = account.tailnet || "";
+    who.appendChild(b);
+    who.appendChild(t);
+    item.appendChild(who);
+    item.dataset && (item.dataset.id = account.id);
+    item.accountID = account.id;
+    item.addEventListener("click", () => switchAccount(account));
+    menu.appendChild(item);
+  }
+  if (accounts.length) {
+    const div = document.createElement("div");
+    div.className = "div";
+    menu.appendChild(div);
+  }
+  const add = document.createElement("button");
+  add.className = "add";
+  add.textContent = "+ Add account…";
+  add.addEventListener("click", addAccount);
+  menu.appendChild(add);
+  menu.hidden = !menuOpen;
+}
+
+function switchAccount(account) {
+  closeMenu();
+  if (account.active) return;
+  switchingTo = account.id;
+  port.postMessage({ cmd: "switch", id: account.id });
+  if (latest) render(latest);
+}
+
+function addAccount() {
+  closeMenu();
+  switchingTo = "new";
+  port.postMessage({ cmd: "addaccount" });
+  if (latest) render(latest);
+}
+
+function closeMenu() {
+  menuOpen = false;
+  el("accountmenu").hidden = true;
 }
 
 // renderExitNodes fills the picker from the status and nothing else: the
@@ -76,6 +182,78 @@ function renderExitNodes(msg, st, running) {
   select.disabled = !msg.connected;
 }
 
+// renderMachines shows the peers matching the search box. With nothing typed
+// the list stays empty: the box is there to answer "what is X's address",
+// not to be a directory.
+function renderMachines(st, running) {
+  const sec = el("machinesec");
+  const peers = Array.isArray(st.peers) ? st.peers : [];
+  sec.hidden = !running || peers.length === 0;
+  const list = el("machines");
+  list.textContent = "";
+  if (sec.hidden) return;
+  const q = String(el("search").value || "").trim().toLowerCase();
+  if (!q) return;
+  const hits = peers.filter(
+    (p) =>
+      (p.name || "").toLowerCase().includes(q) ||
+      (p.dnsName || "").toLowerCase().includes(q) ||
+      (p.ip || "").includes(q)
+  );
+  for (const peer of hits.slice(0, MAX_MACHINES)) {
+    const li = document.createElement("li");
+    const name = document.createElement("button");
+    name.className = "name" + (peer.online ? "" : " off");
+    name.textContent = peer.name || peer.dnsName || peer.ip;
+    name.title = peer.online ? "Open http://" + (peer.dnsName || peer.name) + "/" : "Offline";
+    name.addEventListener("click", () => openPeer(peer));
+    const ip = document.createElement("button");
+    ip.className = "v copy";
+    ip.textContent = peer.ip || "";
+    ip.title = "Copy";
+    ip.addEventListener("click", () => copy(peer.ip));
+    li.appendChild(name);
+    li.appendChild(ip);
+    list.appendChild(li);
+  }
+  if (hits.length > MAX_MACHINES) {
+    const more = document.createElement("li");
+    more.className = "more";
+    more.textContent = hits.length - MAX_MACHINES + " more — keep typing";
+    list.appendChild(more);
+  }
+  if (hits.length === 0) {
+    const none = document.createElement("li");
+    none.className = "more";
+    none.textContent = "No machine matches";
+    list.appendChild(none);
+  }
+}
+
+function openPeer(peer) {
+  const host = peer.dnsName || peer.name;
+  if (!host) return;
+  api.tabs.create({ url: "http://" + host + "/" });
+  window.close();
+}
+
+function copy(text) {
+  if (!text) return;
+  const done = () => {
+    const toast = el("copied");
+    if (!toast) return;
+    toast.hidden = false;
+    setTimeout(() => {
+      toast.hidden = true;
+    }, 1200);
+  };
+  if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done, done);
+  } else {
+    done();
+  }
+}
+
 function render(msg) {
   latest = msg;
   const st = msg.status || {};
@@ -86,6 +264,20 @@ function render(msg) {
   if (st.authURL || st.error || running || state === "Starting") {
     awaitingLogin = false;
   }
+  // A switch is over once the host reports either the target account as
+  // active, or a state the new profile would show (NeedsLogin for a fresh
+  // one, Starting/Running for an existing one).
+  if (switchingTo) {
+    const accounts = Array.isArray(st.accounts) ? st.accounts : [];
+    const active = accounts.find((a) => a.active);
+    if (
+      (switchingTo === "new" && (state === "NeedsLogin" || st.authURL)) ||
+      (active && active.id === switchingTo) ||
+      st.error
+    ) {
+      switchingTo = "";
+    }
+  }
 
   // A login URL supersedes the last login error: the error explains a failure
   // the URL has already moved past, and showing it beside a working Log in
@@ -93,13 +285,26 @@ function render(msg) {
   // list below, so a node that genuinely cannot reach control still says so.
   const errorLine = st.authURL ? "" : st.error;
 
+  renderAccount(msg, st, running);
+
   // "Connected" means the node is up AND the browser is pointed at it. If the
   // proxy configuration did not take, saying Connected alone would be a lie:
   // tailnet names are going out over the public internet.
-  el("state").textContent = running ? runningStateLine(msg, st) : state;
-  el("hint").textContent = awaitingLogin
-    ? "Requesting login link…"
-    : errorLine || HINTS[state] || "";
+  const pill = el("state");
+  pill.textContent = switchingTo
+    ? "Switching account…"
+    : running
+      ? runningStateLine(msg, st)
+      : LABELS[state] || state;
+  pill.className = "pill " + pillKind(msg, st, running);
+  setText(
+    "hint",
+    switchingTo
+      ? "Keeping the proxy off until the other account is up."
+      : awaitingLogin
+        ? "Requesting login link…"
+        : errorLine || HINTS[state] || ""
+  );
 
   // The reason a login is failing arrives as a health warning, so it is shown
   // whether or not it also became the hint above.
@@ -113,13 +318,18 @@ function render(msg) {
   }
   list.hidden = extra.length === 0;
 
+  const toggle = el("toggle");
+  toggle.className = running ? "on" : "";
+  toggle.setAttribute && toggle.setAttribute("aria-checked", running ? "true" : "false");
+  toggle.disabled = !msg.connected || !!switchingTo || (!running && state !== "Stopped" && !st.authURL && state !== "NeedsLogin");
+
   el("details").hidden = !running;
   if (running) {
-    el("tailnet").textContent = st.tailnet || "unknown";
-    el("hostname").textContent = st.hostname || "unknown";
-    el("selfip").textContent = st.selfIP || "unknown";
-    el("port").textContent = st.proxyPort ? "127.0.0.1:" + st.proxyPort : "not listening";
+    setText("tailnet", st.tailnet || "unknown");
+    setText("hostname", st.hostname || "unknown");
+    setText("selfip", st.selfIP || "unknown");
   }
+  setText("port", st.proxyPort ? "proxy 127.0.0.1:" + st.proxyPort : "");
 
   // A login URL is always offered when there is one, warnings or not.
   el("login").hidden = !st.authURL;
@@ -130,13 +340,16 @@ function render(msg) {
   el("logout").hidden = !msg.connected || (!running && state !== "Stopped");
 
   renderExitNodes(msg, st, running);
+  renderMachines(st, running);
 
   const warning = el("warning");
   if (msg.proxyProblem) {
     warning.hidden = false;
+    warning.className = "";
     warning.textContent = msg.proxyProblem;
   } else if (!msg.connected) {
     warning.hidden = false;
+    warning.className = "";
     warning.textContent = "Not connected to the tailtab host. Reconnecting…";
   } else {
     warning.hidden = true;
@@ -146,6 +359,46 @@ function render(msg) {
   if (!logoutArmed) el("logout").textContent = "Log out";
 }
 
+el("account").addEventListener("click", (e) => {
+  if (e && e.stopPropagation) e.stopPropagation();
+  menuOpen = !menuOpen;
+  el("accountmenu").hidden = !menuOpen;
+});
+if (document.addEventListener) {
+  document.addEventListener("click", (e) => {
+    if (!menuOpen) return;
+    const menu = el("accountmenu");
+    if (menu.contains && e && menu.contains(e.target)) return;
+    closeMenu();
+  });
+}
+
+el("toggle").addEventListener("click", () => {
+  const st = (latest && latest.status) || {};
+  if (st.state === "Running") {
+    port.postMessage({ cmd: "down" });
+    return;
+  }
+  if (st.authURL) {
+    api.tabs.create({ url: st.authURL });
+    window.close();
+    return;
+  }
+  connect();
+});
+
+function connect() {
+  const st = (latest && latest.status) || {};
+  // Only NeedsLogin waits on control for a URL; from Stopped, up is immediate.
+  awaitingLogin = st.state === "NeedsLogin" && !st.authURL;
+  if (awaitingLogin) {
+    setText("hint", "Requesting login link…");
+    el("connect").disabled = true;
+    el("connect").textContent = "Requesting…";
+  }
+  port.postMessage({ cmd: "up" });
+}
+
 el("login").addEventListener("click", () => {
   const url = latest && latest.status && latest.status.authURL;
   if (!url) return;
@@ -153,18 +406,12 @@ el("login").addEventListener("click", () => {
   window.close();
 });
 
-el("connect").addEventListener("click", () => {
-  const st = (latest && latest.status) || {};
-  // Only NeedsLogin waits on control for a URL; from Stopped, up is immediate.
-  awaitingLogin = st.state === "NeedsLogin" && !st.authURL;
-  if (awaitingLogin) {
-    el("hint").textContent = "Requesting login link…";
-    el("connect").disabled = true;
-    el("connect").textContent = "Requesting…";
-  }
-  port.postMessage({ cmd: "up" });
-});
+el("connect").addEventListener("click", connect);
 el("disconnect").addEventListener("click", () => port.postMessage({ cmd: "down" }));
+el("selfip").addEventListener("click", () => copy(latest && latest.status && latest.status.selfIP));
+el("search").addEventListener("input", () => {
+  if (latest) renderMachines(latest.status || {}, (latest.status || {}).state === "Running");
+});
 
 // Choosing an exit node routes this whole browser profile through it. Nothing
 // is rendered from this event: the picker moves only when the host reports the

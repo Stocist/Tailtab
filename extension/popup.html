@@ -6,151 +6,150 @@
     <style>
       :root {
         color-scheme: light dark;
-        --fg: #1b1b1f;
-        --muted: #5c5c66;
         --bg: #ffffff;
-        --line: #dcdce3;
-        --accent: #2b5cff;
+        --panel: #f6f7f8;
+        --ink: #1c1f23;
+        --muted: #6b7280;
+        --line: #e5e7eb;
+        --accent: #2f6fed;
+        --ok: #16a34a;
+        --warn: #d97706;
+        --bad: #dc2626;
+        --mono: ui-monospace, "SF Mono", Menlo, monospace;
       }
       @media (prefers-color-scheme: dark) {
         :root {
-          --fg: #ececf1;
-          --muted: #a0a0ad;
-          --bg: #1c1c20;
-          --line: #34343c;
-          --accent: #7d9bff;
+          --bg: #1b1e23;
+          --panel: #14161a;
+          --ink: #e8eaed;
+          --muted: #9aa3ad;
+          --line: #2a2f36;
+          --accent: #6b9cff;
         }
       }
-      /* Any author-origin display rule below would otherwise beat the user
-         agent's [hidden] { display: none }, which is what left the empty
-         details grid on screen before login: dl is display: grid. One rule
-         here covers every element the popup hides. */
-      [hidden] {
-        display: none !important;
-      }
+      /* Any author-origin display rule would otherwise beat the user agent's
+         [hidden]; one rule covers every element the popup hides. */
+      [hidden] { display: none !important; }
+      * { box-sizing: border-box; }
       body {
-        width: 280px;
+        width: 320px;
         margin: 0;
-        padding: 14px;
-        font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        color: var(--fg);
+        font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+        color: var(--ink);
         background: var(--bg);
       }
-      h1 {
-        margin: 0 0 10px;
-        font-size: 14px;
-        letter-spacing: 0.01em;
-      }
-      #state {
-        font-weight: 600;
-      }
-      #hint {
-        color: var(--muted);
-      }
-      #warnings {
-        margin: 8px 0 0;
-        padding: 0 0 0 16px;
-        color: var(--muted);
-      }
-      #warnings li {
-        margin-top: 3px;
-        overflow-wrap: anywhere;
-      }
-      button[disabled] {
-        opacity: 0.6;
-        cursor: default;
-      }
-      dl {
-        margin: 10px 0 0;
-        display: grid;
-        grid-template-columns: auto 1fr;
-        gap: 3px 10px;
-        border-top: 1px solid var(--line);
-        padding-top: 10px;
-      }
-      dt {
-        color: var(--muted);
-      }
-      dd {
-        margin: 0;
-        overflow-wrap: anywhere;
-      }
-      .actions {
-        margin-top: 12px;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-      }
-      button {
-        font: inherit;
-        padding: 5px 10px;
-        border: 1px solid var(--line);
-        border-radius: 6px;
-        background: transparent;
-        color: var(--fg);
-        cursor: pointer;
-      }
-      button.primary {
-        border-color: var(--accent);
-        color: var(--accent);
-        font-weight: 600;
-      }
-      #exitrow {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        margin-top: 10px;
-      }
-      #exitrow label {
-        color: var(--muted);
-      }
-      #exitnode {
-        flex: 1 1 auto;
-        min-width: 0;
-        padding: 4px 6px;
-        border-radius: 6px;
-        border: 1px solid var(--line);
-      }
-      .warn {
-        margin-top: 10px;
-        padding: 7px 9px;
-        border-radius: 6px;
-        border: 1px solid var(--line);
-        color: var(--muted);
-      }
+      button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
+      button[disabled] { opacity: 0.6; cursor: default; }
+      .sec { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+      .sec:last-child { border-bottom: 0; }
+
+      /* header: account switcher + toggle */
+      .hdr { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); position: relative; }
+      #avatar { width: 28px; height: 28px; border-radius: 50%; flex: none; background: linear-gradient(135deg, #8ab4ff, #2f6fed); color: #fff; font-weight: 600; font-size: 12px; display: flex; align-items: center; justify-content: center; }
+      #account { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
+      #account .who { min-width: 0; }
+      #accountname { display: block; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #accounttailnet { display: block; color: var(--muted); font-size: 12px; font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #account .chev { color: var(--muted); font-size: 11px; flex: none; }
+      #toggle { width: 38px; height: 22px; border-radius: 11px; background: var(--muted); position: relative; flex: none; transition: background 0.15s; }
+      #toggle.on { background: var(--ok); }
+      #toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: left 0.15s; }
+      #toggle.on::after { left: 18px; }
+      #accountmenu { position: absolute; left: 10px; right: 10px; top: 50px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2); padding: 6px; z-index: 2; }
+      #accountmenu .item { display: flex; align-items: center; gap: 10px; padding: 7px 9px; border-radius: 7px; width: 100%; }
+      #accountmenu .item.on { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+      #accountmenu .item:hover { background: var(--panel); }
+      #accountmenu .item b { display: block; font-weight: 600; }
+      #accountmenu .item span { display: block; font-size: 11.5px; color: var(--muted); font-family: var(--mono); }
+      #accountmenu .div { height: 1px; background: var(--line); margin: 6px 4px; }
+      #accountmenu .add { color: var(--accent); padding: 7px 9px; width: 100%; }
+
+      /* state pill */
+      .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; font-size: 12px; font-weight: 500; max-width: 100%; }
+      .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
+      .pill.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+      .pill.warn { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn); }
+      .pill.bad { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad); }
+      .pill.off { background: color-mix(in srgb, var(--muted) 14%, transparent); color: var(--muted); }
+      #hint { color: var(--muted); font-size: 12.5px; margin: 6px 0 0; }
+      #warnings { margin: 6px 0 0; padding: 0 0 0 16px; color: var(--warn); font-size: 12.5px; }
+      #warnings li { margin-top: 3px; overflow-wrap: anywhere; }
+      .actions { display: flex; gap: 8px; margin-top: 10px; }
+      .btn { font-size: 13px; padding: 7px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); }
+      .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+      /* rows */
+      .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 5px 0; }
+      .row .k { color: var(--muted); font-size: 12.5px; flex: none; }
+      .row .v { font-family: var(--mono); font-size: 12.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      button.v.copy::after { content: " ⧉"; color: var(--muted); }
+      select { font: inherit; font-size: 13px; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; max-width: 60%; }
+
+      /* machines */
+      #search { width: 100%; font: inherit; font-size: 13px; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; }
+      #search::placeholder { color: var(--muted); }
+      #machines { list-style: none; margin: 6px 0 0; padding: 0; }
+      #machines li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 4px 0; }
+      #machines .name { display: flex; align-items: center; gap: 7px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #machines .name::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); flex: none; }
+      #machines .name.off::before { background: var(--muted); }
+      #machines .more { color: var(--muted); font-size: 12px; }
+
+      /* footer */
+      .foot { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; color: var(--muted); font-size: 12px; font-family: var(--mono); }
+      .foot button { color: var(--muted); font-family: inherit; }
+      #warning { margin: 10px 14px 0; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--warn) 12%, transparent); color: var(--warn); font-size: 12.5px; }
+      #warning.bad { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad); }
+      #copied { position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 4px 10px; border-radius: 999px; font-size: 12px; }
     </style>
   </head>
   <body>
-    <h1>tailtab</h1>
-    <div id="state">Starting…</div>
-    <div id="hint"></div>
-    <ul id="warnings" hidden></ul>
-
-    <dl id="details" hidden>
-      <dt>Tailnet</dt>
-      <dd id="tailnet"></dd>
-      <dt>Machine</dt>
-      <dd id="hostname"></dd>
-      <dt>Address</dt>
-      <dd id="selfip"></dd>
-      <dt>Proxy</dt>
-      <dd id="port"></dd>
-    </dl>
-
-    <div id="exitrow" hidden>
-      <label for="exitnode">Exit node</label>
-      <select id="exitnode"></select>
+    <div class="hdr">
+      <div id="avatar">t</div>
+      <button id="account" aria-haspopup="menu">
+        <span class="who">
+          <span id="accountname">tailtab</span>
+          <span id="accounttailnet"></span>
+        </span>
+        <span class="chev">▾</span>
+      </button>
+      <button id="toggle" role="switch" aria-checked="false" title="Connect or disconnect"></button>
+      <div id="accountmenu" role="menu" hidden></div>
     </div>
 
-    <div class="actions">
-      <button id="login" class="primary" hidden>Log in</button>
-      <button id="connect" hidden>Connect</button>
-      <button id="disconnect" hidden>Disconnect</button>
+    <div class="sec">
+      <span id="state" class="pill off">Starting…</span>
+      <p id="hint"></p>
+      <ul id="warnings" hidden></ul>
+      <div class="actions" id="actions">
+        <button id="login" class="btn primary" hidden>Log in</button>
+        <button id="connect" class="btn" hidden>Connect</button>
+        <button id="disconnect" class="btn" hidden>Disconnect</button>
+      </div>
+      <div id="exitrow" class="row" hidden>
+        <label class="k" for="exitnode">Exit node</label>
+        <select id="exitnode"></select>
+      </div>
+    </div>
+
+    <div class="sec" id="details" hidden>
+      <div class="row"><span class="k">Tailnet</span><span class="v" id="tailnet"></span></div>
+      <div class="row"><span class="k">This device</span><span class="v" id="hostname"></span></div>
+      <div class="row"><span class="k">Address</span><button class="v copy" id="selfip" title="Copy"></button></div>
+    </div>
+
+    <div class="sec" id="machinesec" hidden>
+      <input id="search" type="search" placeholder="Find a machine…" autocomplete="off" />
+      <ul id="machines"></ul>
+    </div>
+
+    <div id="warning" hidden></div>
+
+    <div class="foot">
+      <span id="port"></span>
       <button id="logout" hidden>Log out</button>
     </div>
-
-    <div class="warn" id="warning" hidden></div>
+    <div id="copied" hidden>Copied</div>
 
     <script src="popup.js"></script>
   </body>

@@ -87,12 +87,20 @@ func (b *nodeBackend) Status() *nm.Event {
 			OS:      n.OS,
 		})
 	}
+	for _, a := range st.Accounts {
+		ev.Accounts = append(ev.Accounts, nm.Account{ID: a.ID, Name: a.Name, Tailnet: a.Tailnet, Active: a.Active})
+	}
+	for _, p := range st.Peers {
+		ev.Peers = append(ev.Peers, nm.Peer{Name: p.Name, DNSName: p.DNSName, IP: p.IP, Online: p.Online, OS: p.OS})
+	}
 	return ev
 }
 
-func (b *nodeBackend) SetWantRunning(up bool) error { return b.node.SetWantRunning(up) }
-func (b *nodeBackend) SetExitNode(id string) error  { return b.node.SetExitNode(id) }
-func (b *nodeBackend) Logout() error                { return b.node.Logout() }
+func (b *nodeBackend) SetWantRunning(up bool) error  { return b.node.SetWantRunning(up) }
+func (b *nodeBackend) SetExitNode(id string) error   { return b.node.SetExitNode(id) }
+func (b *nodeBackend) Logout() error                 { return b.node.Logout() }
+func (b *nodeBackend) SwitchAccount(id string) error { return b.node.SwitchAccount(id) }
+func (b *nodeBackend) AddAccount() error             { return b.node.AddAccount() }
 func (b *nodeBackend) Close() error {
 	err := b.proxy.Close()
 	if nerr := b.node.Close(); err == nil {
@@ -114,6 +122,10 @@ type backend interface {
 	SetExitNode(id string) error
 	// Logout drops the node's credentials.
 	Logout() error
+	// SwitchAccount makes another held login profile the active one.
+	SwitchAccount(id string) error
+	// AddAccount starts a login for a new profile, keeping the existing ones.
+	AddAccount() error
 	// Close shuts the node down.
 	Close() error
 }
@@ -215,6 +227,11 @@ func (h *host) handle(req *nm.Request) error {
 		return h.withBackend(func(be backend) error { return be.SetExitNode(id) })
 	case nm.CmdLogout:
 		return h.withBackend(backend.Logout)
+	case nm.CmdSwitch:
+		id := req.ID
+		return h.withBackend(func(be backend) error { return be.SwitchAccount(id) })
+	case nm.CmdAddAccount:
+		return h.withBackend(backend.AddAccount)
 	case "":
 		return errors.New("message has no cmd field")
 	default:

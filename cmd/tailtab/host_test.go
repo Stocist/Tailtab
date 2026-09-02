@@ -31,6 +31,8 @@ type fakeBackend struct {
 	state     string
 	exitNodes []string // every id SetExitNode was called with
 	exitErr   error
+	switched  []string // every id SwitchAccount was called with
+	added     int      // AddAccount calls
 }
 
 func (f *fakeBackend) Init(profileID, browser string) error {
@@ -83,6 +85,20 @@ func (f *fakeBackend) Logout() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.loggedOut = true
+	return nil
+}
+
+func (f *fakeBackend) SwitchAccount(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.switched = append(f.switched, id)
+	return nil
+}
+
+func (f *fakeBackend) AddAccount() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.added++
 	return nil
 }
 

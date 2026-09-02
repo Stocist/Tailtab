@@ -31,7 +31,7 @@ const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 
 // The last status event from the host, and the only thing the UI renders.
-let status = { state: "Disconnected", error: "", proxyPort: 0, tailnet: "", warnings: [], exitNode: "", exitNodes: [], exitNodeActive: false };
+let status = { state: "Disconnected", error: "", proxyPort: 0, tailnet: "", warnings: [], exitNode: "", exitNodes: [], exitNodeActive: false, accounts: [], peers: [] };
 
 // exitMode reports whether the browser should send everything through the
 // proxy. It keys off the exit node being SELECTED, not on it being active: if
@@ -396,6 +396,10 @@ function onHostMessage(msg) {
     exitNodeActive: !!msg.exitNodeActive,
     // Why the node is unhealthy — a blocked control plane, for instance.
     warnings: Array.isArray(msg.warnings) ? msg.warnings : [],
+    // The login profiles this node holds, and the tailnet's machines, for
+    // the popup's account switcher and machine search.
+    accounts: Array.isArray(msg.accounts) ? msg.accounts : [],
+    peers: Array.isArray(msg.peers) ? msg.peers : [],
   });
 }
 
@@ -457,6 +461,13 @@ api.runtime.onConnect.addListener((port) => {
         // The host validates the id against the offers it knows; the popup
         // only ever passes on what the user picked.
         send("exitnode", { id: typeof msg.id === "string" ? msg.id : "" });
+        break;
+      case "switch":
+        // Validated by the host against the profiles it holds.
+        send("switch", { id: typeof msg.id === "string" ? msg.id : "" });
+        break;
+      case "addaccount":
+        send("addaccount");
         break;
       case "status":
         send("status");
