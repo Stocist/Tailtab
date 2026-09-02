@@ -91,6 +91,40 @@ place. Both are safe for ordinary browsing, but a PAC pointing at a dead port
 makes tailnet requests hang until the browser gives up, where no PAC makes them
 fail at once. It is reinstalled as soon as the host is back on its new port.
 
+## Exit node
+
+If your tailnet has an exit node, the popup shows an **Exit node** picker under
+the details. Choosing one routes *this browser profile's entire* web traffic
+through that node — not just tailnet hosts — and choosing **None** puts the split
+tunnel back. Nothing outside this browser profile is affected: other browsers,
+other profiles and the rest of the machine carry on as before.
+
+While an exit node is selected, the rule flips. Everything public goes through
+the proxy and out via the exit node; what stays direct is loopback, link-local
+and private address space, which belong to the network you are sitting on rather
+than the exit node's. The extension and the host flip together, from the same
+status field, so neither sends traffic the other refuses.
+
+Two behaviours worth knowing before you rely on it:
+
+- **An offline exit node blocks browsing rather than falling back.** The popup
+  says *Connected, exit node offline — browsing blocked*. That is deliberate: the
+  alternative is putting your traffic back on the local connection at the moment
+  you were relying on it not being there. Pick **None** to browse normally again.
+- **A dead host process blocks browsing too, while an exit node is selected.**
+  The PAC has no direct fallback, so until the extension notices the host is gone
+  and clears the setting, tailnet-bound and public traffic alike fail. It is the
+  same kill-switch behaviour a VPN gives you, and it resolves itself when the
+  extension reconnects.
+
+**DNS caveat.** Names resolve through the exit node only when that node can
+proxy DNS, which current Tailscale exit nodes do. Against one that cannot, the
+traffic still leaves through the exit node but the name is looked up by this
+Mac's own resolver, so the sites you visit are visible to your local DNS. To
+check yours: with an exit node selected, `https://ifconfig.me` should show the
+exit node's public address, and a DNS-leak page such as
+`https://www.dnsleaktest.com` shows which resolver actually answered.
+
 ## Authentication
 
 The proxy listens on loopback, where every program on the machine can reach it.
@@ -162,7 +196,8 @@ else.
   falls back to the system resolver inside `UserDial`, so a `*.ts.net` name
   belonging to someone else's tailnet is a narrow remaining egress path for an
   authenticated caller.
-- No exit nodes, no peer list, no store packaging, placeholder icons.
+- No peer list, no store packaging, placeholder icons. Exit-node selection is
+  supported; advertising this node as an exit node is not.
 - A temporary add-on in Zen has to be re-loaded after every restart.
 - Firefox private windows are only covered if you enable *Run in Private
   Windows*; the popup says so when you have not.
