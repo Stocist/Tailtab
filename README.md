@@ -4,7 +4,8 @@ tailtab gives one browser profile its own Tailscale node. A WebExtension talks
 over native messaging to a Go host that embeds `tsnet`; the host runs a
 SOCKS5/HTTP proxy on loopback, and the extension sends only tailnet-bound
 traffic there. The listener refuses anything else on its own account, so it is
-a tailnet proxy rather than a general forward proxy. No system-wide Tailscale, no root, and two browser profiles can
+a tailnet proxy rather than a general forward proxy, and it takes a credential
+that only this extension has, so no other program on the machine can use it. No system-wide Tailscale, no root, and two browser profiles can
 sit on two different tailnets at once.
 
 Phase 0 targets macOS with Zen (Firefox 154-based) and Microsoft Edge.
@@ -90,6 +91,56 @@ place. Both are safe for ordinary browsing, but a PAC pointing at a dead port
 makes tailnet requests hang until the browser gives up, where no PAC makes them
 fail at once. It is reinstalled as soon as the host is back on its new port.
 
+## Authentication
+
+The proxy listens on loopback, where every program on the machine can reach it.
+It therefore requires a credential: the username `tailtab` and a token of 32
+random bytes that the host generates at startup and sends to the extension in
+every status event. Without it, any local process could open the port and browse
+the tailnet as this browser profile.
+
+- **HTTP** (Edge, and anything using the listener as an HTTP proxy): the request
+  must carry `Proxy-Authorization: Basic base64("tailtab:<token>")`, on CONNECT
+  and on plain requests both. Anything else gets `407 Proxy Authentication
+  Required`. The header is stripped before a request is forwarded, so tailnet
+  services never see it.
+- **SOCKS5** (Zen): username and password in the RFC 1929 handshake. A client
+  that offers "no authentication" is refused.
+
+The token changes every time the host process starts, so nothing on disk is
+worth stealing later. The extension keeps it in memory and in `storage.session`;
+it is never written to `storage.local`, never shown in the popup, and never
+logged.
+
+Edge reaches the proxy over HTTP rather than SOCKS5 for exactly this reason:
+Chromium has never implemented SOCKS5 authentication, so the PAC says `PROXY`
+and the extension answers the 407 challenge from
+`chrome.webRequest.onAuthRequired`.
+
+To check it by hand while a browser is connected, take the port from the popup:
+
+```sh
+curl -x http://127.0.0.1:<port> http://server/          # 407
+curl -x http://127.0.0.1:<port> -U tailtab:<token> http://server/
+```
+
+The first is the point: another program on your machine cannot ride the
+profile's tailnet identity.
+
+## Permissions
+
+- `nativeMessaging`, `proxy`, `storage`, `tabs` — the native host, the proxy
+  configuration, the profile ID and last status, and opening the login tab.
+- `webRequest`, `webRequestAuthProvider` and `host_permissions: <all_urls>`, on
+  Edge only. `onAuthRequired` is the only way to answer the proxy's 407 in MV3,
+  and it needs all three. This is a real widening of what the extension may see,
+  so: the listener registered under it answers a challenge only when it comes
+  from a proxy at `127.0.0.1` on the port this host is using, returns nothing at
+  all for every other challenge, and never reads or modifies request content.
+  `webRequestAuthProvider` carries no install-time permission warning of its own.
+  Zen needs none of this — Firefox passes SOCKS credentials directly — and its
+  manifest does not ask for them.
+
 ## Logging
 
 `tsnet` uploads its logs to `log.tailscale.com` and there is no supported way
@@ -99,17 +150,16 @@ tailtab does not work around it. The host's own logging goes to stderr, which
 the browser captures: stdout carries the native-messaging protocol and nothing
 else.
 
-## Phase-0 limits
+## Limits
 
 - macOS only; Zen and Edge only.
-- No proxy authentication. The proxy binds a random port on 127.0.0.1 and takes
-  any connection from this machine — Chromium cannot do SOCKS5 authentication
-  at all, so loopback is the boundary. What a caller can reach through it is
-  limited instead: the listener only dials MagicDNS names, `*.ts.net`, and
-  addresses in `100.64.0.0/10` or `fd7a:115c:a1e0::/48`, and refuses everything
-  else with 403 (HTTP) or a SOCKS failure reply. A tailnet on a custom MagicDNS
-  domain is covered too: the host learns its own suffix from the node's status
-  and allows it from then on.
+- The listener's destination guard is by name: it only dials MagicDNS names,
+  `*.ts.net`, this node's own MagicDNS suffix, and addresses in `100.64.0.0/10`
+  or `fd7a:115c:a1e0::/48`, refusing everything else with 403 (HTTP) or a SOCKS
+  failure reply. A name that passes the guard but MagicDNS does not know still
+  falls back to the system resolver inside `UserDial`, so a `*.ts.net` name
+  belonging to someone else's tailnet is a narrow remaining egress path for an
+  authenticated caller.
 - No exit nodes, no peer list, no store packaging, placeholder icons.
 - A temporary add-on in Zen has to be re-loaded after every restart.
 - Firefox private windows are only covered if you enable *Run in Private
