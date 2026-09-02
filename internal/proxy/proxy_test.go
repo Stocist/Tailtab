@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -228,7 +229,7 @@ func loadHostCases(t *testing.T) []hostCase {
 	if err := json.Unmarshal(b, &table); err != nil {
 		t.Fatalf("parsing the shared host table: %v", err)
 	}
-	if len(table.Cases) < 40 {
+	if len(table.Cases) < 55 {
 		t.Fatalf("the shared host table has only %d cases; it should not have shrunk", len(table.Cases))
 	}
 	return table.Cases
@@ -722,5 +723,96 @@ func TestNewTokenIsLongAndRandom(t *testing.T) {
 			t.Fatalf("NewToken returned %q twice", tok)
 		}
 		seen[tok] = true
+	}
+}
+
+// ------------------------------------------- FIX 2, the suffix from control
+
+// The suffix widens the split tunnel wherever it is used, and it comes from
+// whichever coordination server the node is talking to.
+func TestValidMagicDNSSuffix(t *testing.T) {
+	good := []string{
+		"tail4d5e6f.ts.net",
+		"my-tailnet.example.com",
+		"a.b",
+		"tail4d5e6f.example",
+		strings.Repeat("a", 63) + ".example.com",
+	}
+	for _, s := range good {
+		if !validMagicDNSSuffix(s) {
+			t.Errorf("validMagicDNSSuffix(%q) = false, want true", s)
+		}
+	}
+
+	bad := []struct{ suffix, why string }{
+		{"", "empty"},
+		{"com", "a bare TLD would send every .com host through the tailnet"},
+		{"example", "a single label"},
+		{"ts.net", "the public parent of every tailnet, not one tailnet's domain"},
+		{"My-Tailnet.Example.Com", "not lowercase"},
+		{"bad_domain.example", "an underscore is not a DNS label"},
+		{"-bad.example", "a label may not start with a dash"},
+		{"bad-.example", "a label may not end with a dash"},
+		{"a..b", "an empty label"},
+		{"exa mple.com", "a space"},
+		{"héllo.example", "not ASCII"},
+		{strings.Repeat("a", 64) + ".example.com", "a label longer than 63"},
+		{strings.Repeat("a.", 130) + "example", "longer than 253"},
+	}
+	for _, c := range bad {
+		if validMagicDNSSuffix(c.suffix) {
+			t.Errorf("validMagicDNSSuffix(%q) = true, want false (%s)", c.suffix, c.why)
+		}
+	}
+}
+
+func TestARefusedSuffixLeavesTheRuleAlone(t *testing.T) {
+	var logged strings.Builder
+	log.SetOutput(&logged)
+	defer log.SetOutput(os.Stderr)
+
+	p, err := start(func(context.Context, string, string) (net.Conn, error) {
+		return nil, fmt.Errorf("no node")
+	}, testToken)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer p.Close()
+
+	p.SetMagicDNSSuffix("my-tailnet.example.com")
+	if p.MagicDNSSuffix() != "my-tailnet.example.com" {
+		t.Fatalf("a good suffix was not kept: %q", p.MagicDNSSuffix())
+	}
+
+	// Control now says something that would route the internet through the
+	// tailnet. The suffix is dropped, taking the good one with it, and the
+	// .ts.net and single-label rules are what is left.
+	p.SetMagicDNSSuffix("com")
+	if got := p.MagicDNSSuffix(); got != "" {
+		t.Errorf("MagicDNSSuffix() = %q after a refused suffix, want empty", got)
+	}
+	if err := allowTailnetHost("github.com", p.MagicDNSSuffix()); err == nil {
+		t.Error("github.com is allowed after a suffix of com")
+	}
+	if err := allowTailnetHost("wiki.tail4d5e6f.ts.net", p.MagicDNSSuffix()); err != nil {
+		t.Errorf("a .ts.net name is refused after a bad suffix: %v", err)
+	}
+
+	// Once, not on every status refresh.
+	for i := 0; i < 5; i++ {
+		p.SetMagicDNSSuffix("com")
+	}
+	if n := strings.Count(logged.String(), "ignoring the MagicDNS suffix"); n != 1 {
+		t.Errorf("the refusal was logged %d times, want 1:\n%s", n, logged.String())
+	}
+	// A different bad suffix is worth saying again.
+	p.SetMagicDNSSuffix("net")
+	if n := strings.Count(logged.String(), "ignoring the MagicDNS suffix"); n != 2 {
+		t.Errorf("a second, different bad suffix was logged %d times in total, want 2", n)
+	}
+	// And a good one afterwards is accepted.
+	p.SetMagicDNSSuffix(".my-tailnet.example.com.")
+	if got := p.MagicDNSSuffix(); got != "my-tailnet.example.com" {
+		t.Errorf("MagicDNSSuffix() = %q, want the trimmed good suffix", got)
 	}
 }

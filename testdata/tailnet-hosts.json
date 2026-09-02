@@ -64,6 +64,20 @@
     { "host": "wiki", "suffix": "my-tailnet.example.com", "proxy": true, "why": "short names still work" },
     { "host": "wiki.tail4d5e6f.ts.net", "suffix": "my-tailnet.example.com", "proxy": true, "why": "ts.net still works" },
 
+    { "host": "github.com", "suffix": "com", "proxy": false, "why": "a suffix of com must not turn the tunnel inside out" },
+    { "host": "www.google.com", "suffix": "com", "proxy": false, "why": "a bare TLD is not a tailnet domain" },
+    { "host": "com", "suffix": "com", "proxy": true, "why": "a single label is a MagicDNS short name whatever the suffix says" },
+    { "host": "github.com", "suffix": "ts.net", "proxy": false, "why": "ts.net is the public parent, not one tailnet's domain" },
+    { "host": "ts.net", "suffix": "ts.net", "proxy": false, "why": "the public parent, refused as a suffix" },
+    { "host": "host.my-tailnet.example.com", "suffix": "My-Tailnet.Example.Com", "proxy": false, "why": "a suffix must be lowercase" },
+    { "host": "host.bad_domain.example", "suffix": "bad_domain.example", "proxy": false, "why": "an underscore is not a DNS label" },
+    { "host": "host.-bad.example", "suffix": "-bad.example", "proxy": false, "why": "a label may not start with a dash" },
+    { "host": "host.bad-.example", "suffix": "bad-.example", "proxy": false, "why": "a label may not end with a dash" },
+    { "host": "host.tail4d5e6f.example", "suffix": "tail4d5e6f.example", "proxy": true, "why": "a valid two-label custom domain" },
+    { "host": "evil-tail4d5e6f.example", "suffix": "tail4d5e6f.example", "proxy": false, "why": "the suffix matches on a label boundary only" },
+    { "host": "tail4d5e6f.example.evil.com", "suffix": "tail4d5e6f.example", "proxy": false, "why": "suffix in the middle" },
+    { "host": "evil-tail4d5e6f.ts.net", "suffix": "tail4d5e6f.ts.net", "proxy": true, "why": "not the suffix rule: every .ts.net name is another tailnet's, and proxied" },
+
     { "host": "wiki.tail4d5e6f.ts.net", "suffix": "tail4d5e6f.ts.net", "proxy": true, "why": "the phase-0 tailnets" },
     { "host": "tail4d5e6f.ts.net", "suffix": "tail4d5e6f.ts.net", "proxy": true, "why": "the suffix itself" },
     { "host": "github.com", "suffix": "tail4d5e6f.ts.net", "proxy": false, "why": "the public internet" }

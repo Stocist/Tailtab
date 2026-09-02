@@ -587,7 +587,7 @@ test("a running node shows its details and no warnings", () => {
 test("rules.js matches the shared host table", () => {
   const table = JSON.parse(fs.readFileSync(path.resolve(SRC, "..", "testdata", "tailnet-hosts.json"), "utf8"));
   const rules = require(path.join(SRC, "rules.js"));
-  if (!table.cases || table.cases.length < 40) {
+  if (!table.cases || table.cases.length < 55) {
     throw new Error("the shared host table has shrunk: " + (table.cases || []).length + " cases");
   }
   const wrong = [];

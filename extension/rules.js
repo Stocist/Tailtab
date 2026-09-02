@@ -58,8 +58,19 @@ function tailtabIsTailnetHost(host, tailnetDomain) {
   // custom domain rather than *.ts.net.
   if (h.length > 7 && h.slice(-7) === ".ts.net") return true;
   if (tailnetDomain) {
-    var d = String(tailnetDomain).toLowerCase().replace(/^\.+|\.+$/g, "");
-    if (d && (h === d || (h.length > d.length && h.slice(-(d.length + 1)) === "." + d))) {
+    var d = String(tailnetDomain).replace(/^\.+|\.+$/g, "");
+    // The suffix comes from the coordination server and is not trusted on
+    // sight: a suffix of "com" would route the whole internet through the
+    // tailnet. It has to look like a tailnet's own domain — lowercase, two or
+    // more labels, each 1-63 characters of a-z, 0-9 and "-" and not starting
+    // or ending with a dash — and not "ts.net", which is the public parent of
+    // every tailnet and is covered by the rule above. The host's guard applies
+    // the same test (internal/proxy, validMagicDNSSuffix).
+    var ok = d.length > 0 && d.length <= 253 && d !== "ts.net" &&
+      /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/.test(d);
+    // On a label boundary only: with a suffix of "tail4d5e6f.example",
+    // "evil-tail4d5e6f.example" is somebody else's name.
+    if (ok && (h === d || (h.length > d.length && h.slice(-(d.length + 1)) === "." + d))) {
       return true;
     }
   }

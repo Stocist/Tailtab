@@ -99,7 +99,9 @@ func allowTailnetHost(host, suffix string) error {
 	if strings.HasSuffix(h, ".ts.net") {
 		return nil
 	}
-	if d := strings.ToLower(strings.Trim(suffix, ".")); d != "" {
+	if d := strings.Trim(suffix, "."); validMagicDNSSuffix(d) {
+		// On a label boundary only: with a suffix of "tail4d5e6f.example",
+		// "evil-tail4d5e6f.example" is somebody else's name.
 		if h == d || strings.HasSuffix(h, "."+d) {
 			return nil
 		}
@@ -118,6 +120,31 @@ func allowTailnetHost(host, suffix string) error {
 
 // numericHost matches the decimal and hexadecimal forms of a bare IPv4 address.
 var numericHost = regexp.MustCompile(`^([0-9]+|0x[0-9a-f]+)$`)
+
+// magicDNSSuffixRE matches a lowercase DNS name of at least two labels, each
+// one to 63 characters of a-z, 0-9 and "-", not starting or ending with "-".
+var magicDNSSuffixRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$`)
+
+// validMagicDNSSuffix reports whether s is worth trusting as this tailnet's
+// MagicDNS suffix.
+//
+// The suffix arrives from the coordination server, and it widens the split
+// tunnel wherever it is used. An unchecked one turns the tunnel inside out: a
+// suffix of "com" would send every .com host through the tailnet, in the guard
+// here and in the browser's PAC alike. A control server willing to say that is
+// the precondition — a self-hosted one, or a tailnet a user was talked into
+// joining — which makes this cheap to refuse and expensive to allow.
+//
+// So: lowercase, at least two labels, nothing longer than a DNS name can be,
+// and not "ts.net" itself, which is the public parent of every tailnet rather
+// than any one tailnet's own domain (and is already covered by the .ts.net
+// rule).
+func validMagicDNSSuffix(s string) bool {
+	if s == "" || len(s) > 253 || s == "ts.net" {
+		return false
+	}
+	return magicDNSSuffixRE.MatchString(s)
+}
 
 // hostOnly strips a port from a host:port, tolerating a bare host.
 func hostOnly(hostport string) string {
@@ -182,6 +209,9 @@ type Server struct {
 	// It is read on every dial, from whichever goroutine is serving, and
 	// written from the message loop, so it lives under the mutex.
 	suffix string
+	// badSuffix is the last suffix that was refused, kept only so the refusal
+	// is logged once rather than on every status refresh.
+	badSuffix string
 }
 
 // SetMagicDNSSuffix tells the proxy the node's own MagicDNS suffix, so a
@@ -191,9 +221,22 @@ func (s *Server) SetMagicDNSSuffix(suffix string) {
 	if s == nil {
 		return
 	}
+	clean := strings.Trim(suffix, ".")
+	if clean != "" && !validMagicDNSSuffix(clean) {
+		s.mu.Lock()
+		firstTime := s.badSuffix != clean
+		// Refused, and the previous one is dropped with it: the rules fall back
+		// to .ts.net and single labels, which is where they started.
+		s.suffix, s.badSuffix = "", clean
+		s.mu.Unlock()
+		if firstTime {
+			log.Printf("ignoring the MagicDNS suffix %q: it is not a tailnet domain", clean)
+		}
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.suffix = suffix
+	s.suffix, s.badSuffix = clean, ""
 }
 
 // MagicDNSSuffix returns the suffix last pushed in, or "" if none is known.
