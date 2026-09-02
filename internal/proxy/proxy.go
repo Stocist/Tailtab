@@ -64,6 +64,74 @@ var (
 	tailscaleV6 = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
 )
 
+// privateRanges are the addresses that must never be dialled through an exit
+// node: they would resolve on the exit node's own LAN rather than the user's,
+// which is both a surprise and a way to reach a stranger's network. Loopback
+// and link-local are refused for the same reason a proxy never dials them.
+//
+// Tailscale's own ranges are not here: they are allowed in both modes, and are
+// checked before this list.
+var privateRanges = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("10.0.0.0/8"),
+	netip.MustParsePrefix("127.0.0.0/8"),
+	netip.MustParsePrefix("169.254.0.0/16"),
+	netip.MustParsePrefix("172.16.0.0/12"),
+	netip.MustParsePrefix("192.168.0.0/16"),
+	netip.MustParsePrefix("224.0.0.0/4"),
+	netip.MustParsePrefix("255.255.255.255/32"),
+	netip.MustParsePrefix("::1/128"),
+	netip.MustParsePrefix("fc00::/7"),
+	netip.MustParsePrefix("fe80::/10"),
+	netip.MustParsePrefix("ff00::/8"),
+}
+
+// isPrivate reports whether addr is in a range that must stay off the exit
+// node.
+func isPrivate(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	for _, p := range privateRanges {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+// allowExitHost is the destination rule while an exit node is carrying this
+// profile's traffic. The whole point of an exit node is that everything goes
+// through it, so the rule is the inverse of the tailnet one: anything public is
+// allowed, and only what would be dialled on somebody's LAN is refused.
+//
+// extension/rules.js has the same rule for the browser side, and both flip on
+// the same status field, or one side sends traffic the other refuses (G14).
+func allowExitHost(host string) error {
+	h := strings.ToLower(strings.TrimSuffix(host, "."))
+	h = strings.TrimSuffix(strings.TrimPrefix(h, "["), "]")
+	if h == "" {
+		return fmt.Errorf("%w: no host", ErrNotTailnet)
+	}
+	if addr, err := netip.ParseAddr(h); err == nil {
+		addr = addr.Unmap()
+		if tailscaleV4.Contains(addr) || tailscaleV6.Contains(addr) {
+			return nil
+		}
+		if isPrivate(addr) {
+			return fmt.Errorf("%w: %s is a private address, which an exit node must not dial", ErrNotTailnet, h)
+		}
+		return nil
+	}
+	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
+		return fmt.Errorf("%w: %s is loopback", ErrNotTailnet, h)
+	}
+	// A single label is still a MagicDNS short name; everything else is a
+	// public name, which is exactly what the exit node is for.
+	if numericHost.MatchString(h) {
+		return fmt.Errorf("%w: %s is a numeric address", ErrNotTailnet, h)
+	}
+	return nil
+}
+
 // allowTailnetHost reports whether host is something the tailnet can serve.
 //
 // suffix is this node's own MagicDNS suffix, which is not under .ts.net when the
@@ -159,7 +227,7 @@ func hostOnly(hostport string) string {
 // handler in front of it to check first.
 func (s *Server) guard(dial DialFunc) DialFunc {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		if err := allowTailnetHost(hostOnly(addr), s.MagicDNSSuffix()); err != nil {
+		if err := s.allow(hostOnly(addr)); err != nil {
 			return nil, err
 		}
 		return dial(ctx, network, addr)
@@ -177,11 +245,12 @@ func (s *Server) guard(dial DialFunc) DialFunc {
 // The address is passed through as a hostname. MagicDNS resolution happens
 // inside UserDial, for both short names ("wiki") and FQDNs; resolving here
 // would bypass the tailnet resolver entirely.
-func dialTailnet(ts *tsnet.Server, suffix func() string) DialFunc {
+func dialTailnet(ts *tsnet.Server, allow func(string) error) DialFunc {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		// Also checked in guard, which wraps this. Repeated here because this
 		// is the function that reaches the network: it has to be safe alone.
-		if err := allowTailnetHost(hostOnly(addr), suffix()); err != nil {
+		// It is the same rule either way, exit mode included.
+		if err := allow(hostOnly(addr)); err != nil {
 			return nil, err
 		}
 		sys := ts.Sys()
@@ -212,6 +281,41 @@ type Server struct {
 	// badSuffix is the last suffix that was refused, kept only so the refusal
 	// is logged once rather than on every status refresh.
 	badSuffix string
+	// exitActive is whether an exit node is selected AND online. Only then
+	// does the guard widen: a selected-but-offline exit node leaves the
+	// tailnet rule in place, so a public destination is refused instead of
+	// being dialled straight out of this machine (G15).
+	exitActive bool
+}
+
+// SetExitActive tells the proxy whether an exit node is currently carrying this
+// profile's traffic. The host calls it from the status path, beside
+// SetMagicDNSSuffix.
+func (s *Server) SetExitActive(active bool) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.exitActive = active
+}
+
+// ExitActive reports the last value SetExitActive was given.
+func (s *Server) ExitActive() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.exitActive
+}
+
+// allow applies whichever destination rule is in force.
+func (s *Server) allow(host string) error {
+	if s.ExitActive() {
+		return allowExitHost(host)
+	}
+	return allowTailnetHost(host, s.MagicDNSSuffix())
 }
 
 // SetMagicDNSSuffix tells the proxy the node's own MagicDNS suffix, so a
@@ -255,7 +359,7 @@ func (s *Server) MagicDNSSuffix() string {
 // running.
 func Start(ts *tsnet.Server, token string) (*Server, error) {
 	s := &Server{token: token}
-	if err := s.serve(dialTailnet(ts, s.MagicDNSSuffix)); err != nil {
+	if err := s.serve(dialTailnet(ts, s.allow)); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -438,7 +542,7 @@ func (s *Server) handler() http.Handler {
 			http.Error(w, "tailtab: this is a proxy; use an absolute URL or CONNECT", http.StatusBadRequest)
 			return
 		}
-		if err := allowTailnetHost(r.URL.Hostname(), s.MagicDNSSuffix()); err != nil {
+		if err := s.allow(r.URL.Hostname()); err != nil {
 			http.Error(w, "tailtab: "+err.Error(), http.StatusForbidden)
 			return
 		}
@@ -477,7 +581,7 @@ func basicProxyAuth(header string) (user, pass string, ok bool) {
 
 // serveConnect tunnels a CONNECT request to the tailnet.
 func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request) {
-	if err := allowTailnetHost(hostOnly(r.RequestURI), s.MagicDNSSuffix()); err != nil {
+	if err := s.allow(hostOnly(r.RequestURI)); err != nil {
 		http.Error(w, "tailtab: "+err.Error(), http.StatusForbidden)
 		return
 	}

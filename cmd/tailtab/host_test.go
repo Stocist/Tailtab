@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -28,6 +29,8 @@ type fakeBackend struct {
 	wantUp    []bool
 	loggedOut bool
 	state     string
+	exitNodes []string // every id SetExitNode was called with
+	exitErr   error
 }
 
 func (f *fakeBackend) Init(profileID, browser string) error {
@@ -63,6 +66,16 @@ func (f *fakeBackend) SetWantRunning(up bool) error {
 	if up && during != nil {
 		during()
 	}
+	return nil
+}
+
+func (f *fakeBackend) SetExitNode(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.exitErr != nil {
+		return f.exitErr
+	}
+	f.exitNodes = append(f.exitNodes, id)
 	return nil
 }
 
@@ -276,5 +289,53 @@ func TestStatusIsPushedOnceInitIsThrough(t *testing.T) {
 		if ev.Event != "status" || ev.State != "NeedsLogin" {
 			t.Errorf("event %d = %+v, want a status event from the backend", i, ev)
 		}
+	}
+}
+
+// The exit-node command reaches the backend, and a refusal from it becomes an
+// error event rather than a silent no-op: the browser has to know that its
+// traffic is not going where the user just asked.
+func TestExitNodeCommand(t *testing.T) {
+	be := &fakeBackend{}
+	events := runLoop(t, be,
+		`{"cmd":"init","profileID":"`+goodID+`","browser":"edge"}`,
+		`{"cmd":"exitnode","id":"nodeid-server"}`,
+		`{"cmd":"exitnode"}`,
+	)
+	if len(events) != 3 {
+		t.Fatalf("got %d events, want 3: %+v", len(events), events)
+	}
+	for i, ev := range events {
+		if ev.Event != "status" {
+			t.Errorf("event %d = %+v, want a status event", i, ev)
+		}
+	}
+	if want := []string{"nodeid-server", ""}; !slices.Equal(be.exitNodes, want) {
+		t.Errorf("SetExitNode calls = %q, want %q", be.exitNodes, want)
+	}
+}
+
+func TestExitNodeCommandBeforeInitIsRefused(t *testing.T) {
+	be := &fakeBackend{}
+	events := runLoop(t, be, `{"cmd":"exitnode","id":"nodeid-server"}`)
+	if len(events) != 1 || events[0].Event != "error" {
+		t.Fatalf("got %+v, want one error event", events)
+	}
+	if len(be.exitNodes) != 0 {
+		t.Errorf("SetExitNode was called before init: %q", be.exitNodes)
+	}
+}
+
+func TestExitNodeRefusalIsReported(t *testing.T) {
+	be := &fakeBackend{exitErr: errors.New(`"nope" is not an exit node this tailnet offers`)}
+	events := runLoop(t, be,
+		`{"cmd":"init","profileID":"`+goodID+`","browser":"edge"}`,
+		`{"cmd":"exitnode","id":"nope"}`,
+	)
+	if len(events) != 3 {
+		t.Fatalf("got %d events, want 3 (status, status, error): %+v", len(events), events)
+	}
+	if events[2].Event != "error" || !strings.Contains(events[2].Error, "not an exit node") {
+		t.Errorf("got %+v, want the refusal surfaced", events[2])
 	}
 }

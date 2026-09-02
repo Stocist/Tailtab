@@ -13,6 +13,7 @@ import (
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tsconst"
+	"tailscale.com/types/key"
 )
 
 // newTestNode returns a node with the login call stubbed, so the login path can
@@ -346,5 +347,159 @@ func TestHealthDoesNotClearAnAuthURL(t *testing.T) {
 	n.apply(ctx, ipn.Notify{Health: unhealthy("not-in-map-poll", "Cannot reach the coordination server")})
 	if got := n.Status().AuthURL; got != url {
 		t.Errorf("AuthURL = %q after a health notification, want it untouched", got)
+	}
+}
+
+// ---------------------------------------------------------------- exit nodes
+
+func exitPeer(id, host string, online, offer bool) *ipnstate.PeerStatus {
+	return &ipnstate.PeerStatus{
+		ID:             tailcfg.StableNodeID(id),
+		HostName:       host,
+		DNSName:        host + ".tail1a2b3c.ts.net.",
+		OS:             "linux",
+		Online:         online,
+		ExitNodeOption: offer,
+	}
+}
+
+func TestExitNodeOffersReachTheStatus(t *testing.T) {
+	var st Status
+	applyIPNStatus(&st, &ipnstate.Status{
+		BackendState: ipn.Running.String(),
+		Peer: map[key.NodePublic]*ipnstate.PeerStatus{
+			key.NewNode().Public(): exitPeer("nodeid-server", "server", true, true),
+			key.NewNode().Public(): exitPeer("nodeid-laptop", "laptop", true, false),
+			key.NewNode().Public(): exitPeer("nodeid-attic", "attic", false, true),
+		},
+	})
+
+	// Only the peers that offer, sorted by name so a map's iteration order
+	// cannot make every refresh look like a change.
+	want := []ExitNode{
+		{ID: "nodeid-attic", Name: "attic", DNSName: "attic.tail1a2b3c.ts.net", Online: false, OS: "linux"},
+		{ID: "nodeid-server", Name: "server", DNSName: "server.tail1a2b3c.ts.net", Online: true, OS: "linux"},
+	}
+	if !slices.Equal(st.ExitNodes, want) {
+		t.Errorf("ExitNodes = %+v, want %+v", st.ExitNodes, want)
+	}
+	if st.ExitNodeActive {
+		t.Error("ExitNodeActive is true with nothing selected")
+	}
+}
+
+func TestExitNodeIsActiveOnlyWhenOnline(t *testing.T) {
+	base := func(exit *ipnstate.ExitNodeStatus) *ipnstate.Status {
+		return &ipnstate.Status{
+			BackendState:   ipn.Running.String(),
+			ExitNodeStatus: exit,
+			Peer: map[key.NodePublic]*ipnstate.PeerStatus{
+				key.NewNode().Public(): exitPeer("nodeid-server", "server", true, true),
+			},
+		}
+	}
+	var st Status
+	applyIPNStatus(&st, base(&ipnstate.ExitNodeStatus{ID: "nodeid-server", Online: true}))
+	if !st.ExitNodeActive {
+		t.Error("ExitNodeActive is false for an online exit node in use")
+	}
+	applyIPNStatus(&st, base(&ipnstate.ExitNodeStatus{ID: "nodeid-server", Online: false}))
+	if st.ExitNodeActive {
+		t.Error("ExitNodeActive is true for an offline exit node; browsing must be blocked, not rerouted")
+	}
+	// Selected but gone from the netmap: ipnstate reports no exit node at all.
+	applyIPNStatus(&st, base(nil))
+	if st.ExitNodeActive {
+		t.Error("ExitNodeActive is true with no exit node in the netmap")
+	}
+}
+
+// The selection comes from the prefs, not from the status: a node that has left
+// the netmap is still selected, and reading it from the status would make it
+// look as though nothing was.
+func TestExitNodeSelectionComesFromThePrefs(t *testing.T) {
+	n, _, seen := newTestNode(t)
+	ctx := context.Background()
+	reads := 0
+	n.readStatus = func(context.Context) (*ipnstate.Status, error) {
+		reads++
+		return &ipnstate.Status{
+			BackendState: ipn.Running.String(),
+			Peer: map[key.NodePublic]*ipnstate.PeerStatus{
+				key.NewNode().Public(): exitPeer("nodeid-server", "server", true, true),
+			},
+		}, nil
+	}
+
+	prefs := (&ipn.Prefs{ExitNodeID: "nodeid-gone"}).View()
+	n.apply(ctx, ipn.Notify{Prefs: &prefs})
+	if got := n.Status().ExitNode; got != "nodeid-gone" {
+		t.Errorf("ExitNode = %q, want the id from the prefs", got)
+	}
+	if n.Status().ExitNodeActive {
+		t.Error("ExitNodeActive is true for a node that is not in the netmap")
+	}
+	// A prefs change has to refresh: whether that node is usable is only
+	// visible in the status.
+	if reads != 1 {
+		t.Errorf("a prefs notification caused %d status reads, want 1", reads)
+	}
+	if len(*seen) == 0 {
+		t.Fatal("the new selection never reached the extension")
+	}
+
+	none := (&ipn.Prefs{}).View()
+	n.apply(ctx, ipn.Notify{Prefs: &none})
+	if got := n.Status().ExitNode; got != "" {
+		t.Errorf("ExitNode = %q after clearing the selection, want empty", got)
+	}
+}
+
+func TestSetExitNodeRefusesAnUnknownID(t *testing.T) {
+	n, _, _ := newTestNode(t)
+	var edited []string
+	n.editPrefs = func(_ context.Context, mp *ipn.MaskedPrefs) (*ipn.Prefs, error) {
+		if !mp.ExitNodeIDSet {
+			t.Error("EditPrefs was called without ExitNodeIDSet, so nothing would change")
+		}
+		edited = append(edited, string(mp.Prefs.ExitNodeID))
+		return &ipn.Prefs{}, nil
+	}
+	n.st.ExitNodes = []ExitNode{{ID: "nodeid-server", Name: "server", Online: true}}
+
+	if err := n.SetExitNode("nodeid-nope"); err == nil {
+		t.Error("an unknown exit node id was accepted")
+	}
+	if len(edited) != 0 {
+		t.Errorf("an unknown id reached EditPrefs: %q", edited)
+	}
+	if err := n.SetExitNode("nodeid-server"); err != nil {
+		t.Errorf("a known exit node was refused: %v", err)
+	}
+	// Clearing needs no offer to match.
+	if err := n.SetExitNode(""); err != nil {
+		t.Errorf("clearing the exit node failed: %v", err)
+	}
+	if want := []string{"nodeid-server", ""}; !slices.Equal(edited, want) {
+		t.Errorf("EditPrefs saw %q, want %q", edited, want)
+	}
+}
+
+func TestExitNodeChangesCountAsAChange(t *testing.T) {
+	a := Status{State: "Running", ExitNodes: []ExitNode{{ID: "n1", Name: "server", Online: true}}}
+	b := a
+	b.ExitNodes = []ExitNode{{ID: "n1", Name: "server", Online: false}}
+	if a.equal(b) {
+		t.Error("an exit node going offline compares equal, so the popup would never hear about it")
+	}
+	c := a
+	c.ExitNode = "n1"
+	if a.equal(c) {
+		t.Error("selecting an exit node compares equal")
+	}
+	d := a
+	d.ExitNodeActive = true
+	if a.equal(d) {
+		t.Error("an exit node becoming active compares equal")
 	}
 }

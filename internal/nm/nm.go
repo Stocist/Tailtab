@@ -31,6 +31,9 @@ const (
 	CmdUp     Command = "up"
 	CmdDown   Command = "down"
 	CmdLogout Command = "logout"
+	// CmdExitNode selects an exit node by stable ID, or clears the selection
+	// when ID is empty.
+	CmdExitNode Command = "exitnode"
 )
 
 // Request is a message from the browser extension. Nothing in it is trusted.
@@ -43,6 +46,20 @@ type Request struct {
 
 	// Browser is "zen" or "edge". It is only used to build a node hostname.
 	Browser string `json:"browser,omitempty"`
+
+	// ID is the exit node's stable node ID, for CmdExitNode. Empty selects no
+	// exit node. It is checked against the offers the node reported before it
+	// is used.
+	ID string `json:"id,omitempty"`
+}
+
+// ExitNode is one exit-node offer, as the popup's picker needs it.
+type ExitNode struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	DNSName string `json:"dnsName,omitempty"`
+	Online  bool   `json:"online"`
+	OS      string `json:"os,omitempty"`
 }
 
 // Event is a message from the host to the browser extension. Exactly one of
@@ -64,6 +81,16 @@ type Event struct {
 	// storage.local.
 	ProxyToken string `json:"proxyToken,omitempty"`
 	Error      string `json:"error,omitempty"`
+
+	// ExitNodes is every exit node this tailnet offers, for the picker. It is
+	// empty on most tailnets, and the popup shows no picker then.
+	ExitNodes []ExitNode `json:"exitNodes,omitempty"`
+	// ExitNode is the stable ID of the selected one, "" for none.
+	ExitNode string `json:"exitNode,omitempty"`
+	// ExitNodeActive is whether that node is online and carrying traffic.
+	// Selected but not active means browsing is blocked, not rerouted: both
+	// the browser's rules and the host's guard key off this pair (G14, G15).
+	ExitNodeActive bool `json:"exitNodeActive,omitempty"`
 	// Warnings is the backend's unhealthy warnables, as text for the popup.
 	Warnings []string `json:"warnings,omitempty"`
 }

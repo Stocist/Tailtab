@@ -18,9 +18,26 @@ import (
 	"tailscale.com/health"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/tailcfg"
 	"tailscale.com/tsconst"
 	"tailscale.com/tsnet"
 )
+
+// ExitNode is a peer that offers to route this node's internet traffic.
+type ExitNode struct {
+	// ID is the stable node ID. It is what identifies an exit node across
+	// restarts and address changes; never an IP or a hostname (G17).
+	ID string
+	// Name is the short hostname, e.g. "server", for the picker.
+	Name string
+	// DNSName is the full MagicDNS name, without the trailing dot.
+	DNSName string
+	// Online is whether the peer is reachable through the control plane. An
+	// offline exit node is still listed, and still selectable, but browsing
+	// through it is blocked rather than sent out some other way.
+	Online bool
+	OS     string
+}
 
 // Status is a snapshot of the node, shaped for the extension.
 type Status struct {
@@ -35,6 +52,16 @@ type Status struct {
 	Hostname string
 	SelfIP   string
 	Error    string
+	// ExitNodes is every peer offering to be an exit node, sorted by name.
+	ExitNodes []ExitNode
+	// ExitNode is the stable ID of the selected exit node, or "" for none. It
+	// comes from the prefs, which stay authoritative even when the peer has
+	// left the netmap entirely.
+	ExitNode string
+	// ExitNodeActive is whether that exit node is present and online, which is
+	// the only state in which traffic actually leaves through it. Selected but
+	// not active means browsing is blocked, not rerouted (G15).
+	ExitNodeActive bool
 	// Warnings is the text of every unhealthy warnable the backend reports,
 	// sorted by warnable code. This is where a node that cannot reach the
 	// control plane says so: without it a blocked node looks identical to one
@@ -52,6 +79,9 @@ func (s Status) equal(o Status) bool {
 		s.Hostname == o.Hostname &&
 		s.SelfIP == o.SelfIP &&
 		s.Error == o.Error &&
+		s.ExitNode == o.ExitNode &&
+		s.ExitNodeActive == o.ExitNodeActive &&
+		slices.Equal(s.ExitNodes, o.ExitNodes) &&
 		slices.Equal(s.Warnings, o.Warnings)
 }
 
@@ -76,11 +106,14 @@ type Node struct {
 	// startLogin is lc.StartLoginInteractive once the node is up. It is a
 	// field so tests can drive the login path without a control server.
 	startLogin func(context.Context) error
-	// readStatus is lc.StatusWithoutPeers once the node is up, for the same
-	// reason: refresh has to be observable in a test with no local API.
+	// readStatus is lc.Status once the node is up, for the same reason:
+	// refresh has to be observable in a test with no local API. It is the
+	// with-peers call, because the exit-node list is built from the peers.
 	readStatus func(context.Context) (*ipnstate.Status, error)
-	started    bool
-	st         Status
+	// editPrefs is lc.EditPrefs, a field for the same reason.
+	editPrefs func(context.Context, *ipn.MaskedPrefs) (*ipn.Prefs, error)
+	started   bool
+	st        Status
 }
 
 // New returns a Node that calls onChange whenever its status changes.
@@ -172,7 +205,8 @@ func (n *Node) Start(profileID, browser string) error {
 	n.lc = lc
 	n.cancel = cancel
 	n.startLogin = lc.StartLoginInteractive
-	n.readStatus = lc.StatusWithoutPeers
+	n.readStatus = lc.Status
+	n.editPrefs = lc.EditPrefs
 	n.mu.Unlock()
 
 	// NotifyInitialStatus is what carries the tailnet name and self IP:
@@ -189,7 +223,12 @@ func (n *Node) Start(profileID, browser string) error {
 	// the pair (ipn/backend.go, NotifyRateLimitIncompatibleBits) and the
 	// LocalAPI answers 400 Bad Request. Losing the rate limit only means more
 	// notifications, and update below drops the ones that change nothing.
-	w, err := lc.WatchIPNBus(ctx, ipn.NotifyInitialState|ipn.NotifyInitialStatus|ipn.NotifyInitialHealthState)
+	// NotifyInitialPrefs carries the current prefs with the first message and
+	// the backend sends ipn.Notify{Prefs: ...} on every change after that, so
+	// the selected exit node is known without polling GetPrefs. It is the
+	// authoritative source for the selection: ipnstate.Status only reports an
+	// exit node that is still in the netmap.
+	w, err := lc.WatchIPNBus(ctx, ipn.NotifyInitialState|ipn.NotifyInitialStatus|ipn.NotifyInitialHealthState|ipn.NotifyInitialPrefs)
 	if err != nil {
 		cancel()
 		return fmt.Errorf("watching the IPN bus: %w", err)
@@ -250,6 +289,9 @@ func (n *Node) apply(ctx context.Context, notify ipn.Notify) {
 			st.AuthURL = *notify.BrowseToURL
 			n.loginRequested = false // the request was answered
 		}
+		if notify.Prefs != nil && notify.Prefs.Valid() {
+			st.ExitNode = string(notify.Prefs.ExitNodeID())
+		}
 		if notify.Health != nil {
 			st.Warnings, n.loginWarning = healthWarnings(notify.Health)
 		}
@@ -275,7 +317,10 @@ func (n *Node) apply(ctx context.Context, notify ipn.Notify) {
 	// suffix or a fresh address arrives once the node is already Running. The
 	// netmap itself is nil here (G2), so the only way to see what changed is
 	// to re-read the status (N3).
-	if notify.State != nil || notify.SelfChange != nil {
+	// A prefs change is the third: choosing an exit node changes nothing in the
+	// state machine, but it decides whether the exit node is active and so
+	// whether the browser may leave the tailnet at all.
+	if notify.State != nil || notify.SelfChange != nil || notify.Prefs != nil {
 		n.refresh(ctx)
 	}
 
@@ -338,6 +383,50 @@ func applyIPNStatus(st *Status, s *ipnstate.Status) {
 	if len(s.TailscaleIPs) > 0 && st.SelfIP == "" {
 		st.SelfIP = s.TailscaleIPs[0].String()
 	}
+	applyExitNodes(st, s)
+}
+
+// applyExitNodes copies the exit-node offers and the state of the selected one
+// out of a status snapshot.
+//
+// The selection itself is not taken from here: ipnstate only reports an exit
+// node that is still in the netmap, so a node that has been removed would read
+// as "none selected" while the prefs still point at it. The prefs, which arrive
+// on the bus, are the authority for that.
+func applyExitNodes(st *Status, s *ipnstate.Status) {
+	nodes := make([]ExitNode, 0, len(s.Peer))
+	for _, p := range s.Peer {
+		if p == nil || !p.ExitNodeOption {
+			continue
+		}
+		name := p.HostName
+		dns := strings.TrimSuffix(p.DNSName, ".")
+		if name == "" {
+			name, _, _ = strings.Cut(dns, ".")
+		}
+		if name == "" {
+			name = string(p.ID)
+		}
+		nodes = append(nodes, ExitNode{
+			ID:      string(p.ID),
+			Name:    name,
+			DNSName: dns,
+			Online:  p.Online,
+			OS:      p.OS,
+		})
+	}
+	// s.Peer is a map, so without a sort the list would arrive in a different
+	// order every refresh and every one would look like a change.
+	slices.SortFunc(nodes, func(a, b ExitNode) int {
+		if c := strings.Compare(a.Name, b.Name); c != 0 {
+			return c
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	st.ExitNodes = nodes
+	// Present in the netmap and online: the one state in which traffic really
+	// leaves through it.
+	st.ExitNodeActive = s.ExitNodeStatus != nil && s.ExitNodeStatus.Online
 }
 
 // healthWarnings flattens a health snapshot into the text shown to the user,
@@ -405,6 +494,39 @@ func (n *Node) SetWantRunning(up bool) error {
 		// bus already asked for this episode.
 		return n.requestLogin(ctx)
 	}
+	return nil
+}
+
+// SetExitNode selects an exit node by stable ID, or clears the selection when
+// id is empty. An id that is not one of the offers reported in the last status
+// is refused: the browser is about to route all its traffic through whatever
+// this names, so a typo or a stale id must not become "no exit node" silently.
+//
+// ExitNodeAllowLANAccess is deliberately not set. The browser never reaches the
+// exit node's LAN: the proxy's guard refuses private address space in exit mode
+// and the browser's own rules send it direct.
+func (n *Node) SetExitNode(id string) error {
+	n.mu.Lock()
+	edit := n.editPrefs
+	known := slices.ContainsFunc(n.st.ExitNodes, func(e ExitNode) bool { return e.ID == id })
+	n.mu.Unlock()
+	if edit == nil {
+		return errors.New("node is not started")
+	}
+	if id != "" && !known {
+		return fmt.Errorf("%q is not an exit node this tailnet offers", id)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := edit(ctx, &ipn.MaskedPrefs{
+		Prefs:         ipn.Prefs{ExitNodeID: tailcfg.StableNodeID(id)},
+		ExitNodeIDSet: true,
+	}); err != nil {
+		return fmt.Errorf("selecting the exit node: %w", err)
+	}
+	// The prefs notification that follows carries the new selection, and the
+	// refresh it triggers says whether the node is actually usable.
 	return nil
 }
 

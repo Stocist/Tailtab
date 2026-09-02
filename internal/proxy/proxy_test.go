@@ -908,3 +908,173 @@ func TestAnAuthenticatedTunnelOutlivesTheHandshakeDeadline(t *testing.T) {
 		t.Errorf("the tunnel echoed %q, want %q", got, "ping")
 	}
 }
+
+// ------------------------------------------------------- X2, the exit mode
+
+func loadExitCases(t *testing.T) []hostCase {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "..", "testdata", "exit-mode-hosts.json"))
+	if err != nil {
+		t.Fatalf("reading the exit-mode table: %v", err)
+	}
+	var table struct {
+		Cases []hostCase `json:"cases"`
+	}
+	if err := json.Unmarshal(b, &table); err != nil {
+		t.Fatalf("parsing the exit-mode table: %v", err)
+	}
+	if len(table.Cases) < 30 {
+		t.Fatalf("the exit-mode table has only %d cases; it should not have shrunk", len(table.Cases))
+	}
+	return table.Cases
+}
+
+// With an exit node carrying the traffic the rule inverts: the public internet
+// is the point, and what is refused is what would be dialled on the exit node's
+// LAN rather than the user's.
+func TestAllowExitHost(t *testing.T) {
+	for _, c := range loadExitCases(t) {
+		err := allowExitHost(c.Host)
+		if c.Proxy && err != nil {
+			t.Errorf("allowExitHost(%q) = %v, want nil (%s)", c.Host, err, c.Why)
+		}
+		if !c.Proxy {
+			if err == nil {
+				t.Errorf("allowExitHost(%q) = nil, want a refusal (%s)", c.Host, c.Why)
+			} else if !errors.Is(err, ErrNotTailnet) {
+				t.Errorf("allowExitHost(%q) = %v, which does not wrap ErrNotTailnet", c.Host, err)
+			}
+		}
+	}
+}
+
+// The two rules must differ in exactly the way the design says: exit mode is
+// wider for public destinations and no wider for anything local.
+func TestTheTwoModesDifferOnlyWhereIntended(t *testing.T) {
+	for _, c := range loadExitCases(t) {
+		exitErr := allowExitHost(c.Host)
+		tailnetErr := allowTailnetHost(c.Host, "")
+		if tailnetErr == nil && exitErr != nil {
+			t.Errorf("%q is allowed in the tailnet rule but refused in exit mode (%s)", c.Host, c.Why)
+		}
+	}
+	// And nothing private becomes reachable by turning exit mode on.
+	for _, h := range []string{"127.0.0.1", "10.0.0.5", "192.168.1.1", "169.254.1.1", "fe80::1", "fd00::1", "localhost"} {
+		if err := allowExitHost(h); err == nil {
+			t.Errorf("allowExitHost(%q) = nil; exit mode must not reach a LAN", h)
+		}
+	}
+}
+
+// The mode follows the status while the proxy is running: no restart, and the
+// switch has to take effect on the very next request.
+func TestTheGuardFollowsTheExitMode(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "reached")
+	}))
+	defer backend.Close()
+
+	d := &recordingDialer{target: strings.TrimPrefix(backend.URL, "http://")}
+	p, err := start(d.dial, testToken)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer p.Close()
+	c := proxyClient(p)
+
+	get := func(url string) int {
+		t.Helper()
+		resp, err := c.Get(url)
+		if err != nil {
+			t.Fatalf("GET %s through the proxy: %v", url, err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// Selected but not active is the phase-1 rule: a public host is refused,
+	// rather than dialled straight out of this machine while the browser
+	// believes it is behind the exit node.
+	if p.ExitActive() {
+		t.Fatal("a fresh proxy is already in exit mode")
+	}
+	if code := get("http://github.com/"); code != http.StatusForbidden {
+		t.Errorf("github.com with no exit node: status %d, want 403", code)
+	}
+
+	p.SetExitActive(true)
+	if code := get("http://github.com/"); code != 200 {
+		t.Errorf("github.com in exit mode: status %d, want 200", code)
+	}
+	if code := get("http://wiki/"); code != 200 {
+		t.Errorf("a tailnet name in exit mode: status %d, want 200", code)
+	}
+	if code := get("http://192.168.1.1/"); code != http.StatusForbidden {
+		t.Errorf("a LAN address in exit mode: status %d, want 403", code)
+	}
+
+	// And back again, without a restart.
+	p.SetExitActive(false)
+	if code := get("http://github.com/"); code != http.StatusForbidden {
+		t.Errorf("github.com after the exit node went away: status %d, want 403", code)
+	}
+	if code := get("http://wiki/"); code != 200 {
+		t.Errorf("a tailnet name after the exit node went away: status %d, want 200", code)
+	}
+}
+
+// The SOCKS path reads the same mode, through the dialer guard.
+func TestSOCKSFollowsTheExitMode(t *testing.T) {
+	dialed := make(chan string, 4)
+	p, err := start(func(_ context.Context, _, addr string) (net.Conn, error) {
+		dialed <- addr
+		return nil, fmt.Errorf("no node")
+	}, testToken)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer p.Close()
+
+	if code := socks5Connect(t, p.Port(), "github.com", 443); code == 0 {
+		t.Error("SOCKS5 reached github.com with no exit node")
+	}
+	select {
+	case addr := <-dialed:
+		t.Errorf("the dialer was asked for %q with no exit node", addr)
+	default:
+	}
+
+	p.SetExitActive(true)
+	if code := socks5Connect(t, p.Port(), "github.com", 443); code == 0 {
+		t.Error("SOCKS5 CONNECT reported success with no node running")
+	}
+	select {
+	case addr := <-dialed:
+		if addr != "github.com:443" {
+			t.Errorf("the dialer was asked for %q, want github.com:443", addr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("a public destination never reached the dialer in exit mode")
+	}
+}
+
+// Authentication is unchanged by the mode: exit mode is about where traffic may
+// go, not about who may send it.
+func TestExitModeStillNeedsTheToken(t *testing.T) {
+	p, err := start(func(context.Context, string, string) (net.Conn, error) {
+		t.Error("an unauthenticated request reached the dialer in exit mode")
+		return nil, nil
+	}, testToken)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer p.Close()
+	p.SetExitActive(true)
+
+	if got := connectStatus(t, p.Port(), ""); !strings.HasPrefix(got, "HTTP/1.1 407") {
+		t.Errorf("CONNECT with no credential in exit mode: %q, want 407", got)
+	}
+	if _, method := socks5Greet(t, p.Port(), socksNoAuth); method != socksNoAcceptable {
+		t.Errorf("SOCKS5 accepted method %d in exit mode, want 0xff", method)
+	}
+}

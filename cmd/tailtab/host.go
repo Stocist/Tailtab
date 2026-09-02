@@ -38,7 +38,9 @@ func (b *nodeBackend) Init(profileID, browser string) error {
 	// The bus starts inside node.Start above, so the suffix may have arrived
 	// while there was still no proxy to give it to. Take it from the node now;
 	// after this, statusChanged keeps the two in step.
-	p.SetMagicDNSSuffix(b.node.Status().Tailnet)
+	st := b.node.Status()
+	p.SetMagicDNSSuffix(st.Tailnet)
+	p.SetExitActive(st.ExitNodeActive)
 	log.Printf("proxy listening on 127.0.0.1:%d", p.Port())
 	return nil
 }
@@ -56,6 +58,11 @@ func (b *nodeBackend) statusChanged(st node.Status) {
 	// The suffix is not trusted on sight — SetMagicDNSSuffix validates it —
 	// and it is nil until the proxy is up, part-way through Init.
 	p.SetMagicDNSSuffix(st.Tailnet)
+	// The guard widens to the whole internet only while an exit node is
+	// actually carrying traffic. Selected but offline keeps the phase-1 guard,
+	// so a public destination is refused rather than dialled straight out of
+	// the Mac while the browser believes it is behind the exit node (G15).
+	p.SetExitActive(st.ExitNodeActive)
 	b.h.pushStatus()
 }
 
@@ -69,10 +76,22 @@ func (b *nodeBackend) Status() *nm.Event {
 	ev.SelfIP = st.SelfIP
 	ev.Error = st.Error
 	ev.Warnings = st.Warnings
+	ev.ExitNode = st.ExitNode
+	ev.ExitNodeActive = st.ExitNodeActive
+	for _, n := range st.ExitNodes {
+		ev.ExitNodes = append(ev.ExitNodes, nm.ExitNode{
+			ID:      n.ID,
+			Name:    n.Name,
+			DNSName: n.DNSName,
+			Online:  n.Online,
+			OS:      n.OS,
+		})
+	}
 	return ev
 }
 
 func (b *nodeBackend) SetWantRunning(up bool) error { return b.node.SetWantRunning(up) }
+func (b *nodeBackend) SetExitNode(id string) error  { return b.node.SetExitNode(id) }
 func (b *nodeBackend) Logout() error                { return b.node.Logout() }
 func (b *nodeBackend) Close() error {
 	err := b.proxy.Close()
@@ -91,6 +110,8 @@ type backend interface {
 	Status() *nm.Event
 	// SetWantRunning connects (true) or disconnects (false) the node.
 	SetWantRunning(up bool) error
+	// SetExitNode selects an exit node by stable ID, or clears the selection.
+	SetExitNode(id string) error
 	// Logout drops the node's credentials.
 	Logout() error
 	// Close shuts the node down.
@@ -189,6 +210,9 @@ func (h *host) handle(req *nm.Request) error {
 		return h.withBackend(func(be backend) error { return be.SetWantRunning(true) })
 	case nm.CmdDown:
 		return h.withBackend(func(be backend) error { return be.SetWantRunning(false) })
+	case nm.CmdExitNode:
+		id := req.ID
+		return h.withBackend(func(be backend) error { return be.SetExitNode(id) })
 	case nm.CmdLogout:
 		return h.withBackend(backend.Logout)
 	case "":
