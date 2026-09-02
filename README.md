@@ -108,9 +108,11 @@ the tailnet as this browser profile.
   that offers "no authentication" is refused.
 
 The token changes every time the host process starts, so nothing on disk is
-worth stealing later. The extension keeps it in memory and in `storage.session`;
-it is never written to `storage.local`, never shown in the popup, and never
-logged.
+worth stealing later. The extension keeps it in memory and nowhere else — not
+`storage.local`, not `storage.session`, not the popup, not a log line — and
+drops it the moment the host disconnects. There is nothing worth saving: the
+host is a child of the extension's background page, so a restarted background
+page always meets a new host with a new port and a new token.
 
 Edge reaches the proxy over HTTP rather than SOCKS5 for exactly this reason:
 Chromium has never implemented SOCKS5 authentication, so the PAC says `PROXY`

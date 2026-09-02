@@ -30,9 +30,14 @@ const RECONNECT_MAX_MS = 30000;
 let status = { state: "Disconnected", error: "", proxyPort: 0, tailnet: "", warnings: [] };
 // Why the proxy could not be configured, if it could not be.
 let proxyProblem = "";
-// The proxy credential from the host. This is a secret: it lives here and in
-// storage.session, never in storage.local, never in the popup, and never in a
-// log line. It changes with every host process.
+// The proxy credential from the host. This is a secret, and it is deliberately
+// kept nowhere but this variable: not storage.local, not storage.session, not
+// the popup, not a log line.
+//
+// There is nothing to persist. The host is a native-messaging child of this
+// worker, so it dies when the worker does; a restarted worker always faces a
+// new host process with a new port and a new token, which makes any saved pair
+// stale by construction.
 let proxyToken = "";
 
 let profileID = null;
@@ -171,6 +176,10 @@ function connect() {
     nativePort = null;
     initSent = false;
     const why = err && err.message ? err.message : "The tailtab host stopped.";
+    // The credential dies with the process that would have honoured it.
+    // Holding on to it could only produce an answer to a challenge from
+    // whatever takes the port next.
+    proxyToken = "";
     setStatus({
       state: "Disconnected",
       error: why,
@@ -232,7 +241,6 @@ function onHostMessage(msg) {
   // Kept out of status: the popup is sent status, and the token must never go
   // there. It arrives with every status event and rotates with the host.
   proxyToken = msg.proxyToken || "";
-  saveToken();
 
   setStatus({
     state: msg.state || "",
@@ -327,18 +335,6 @@ function saveStatus() {
   }
 }
 
-// saveToken keeps the credential in storage.session — cleared when the browser
-// closes, and never storage.local, which survives on disk. A worker restarted
-// while the host is still up can then answer a 407 before the next status
-// event arrives.
-function saveToken() {
-  try {
-    if (api.storage && api.storage.session) api.storage.session.set({ proxyToken: proxyToken });
-  } catch (e) {
-    // Losing it costs one status round-trip.
-  }
-}
-
 // The profile ID names the node's state directory on disk. It is generated
 // once and never regenerated: a new ID means a new node and a fresh login.
 async function loadProfileID() {
@@ -365,9 +361,8 @@ loadProfileID().then((id) => {
   sendInit();
   // The service worker may have been restarted with a status already known.
   if (api.storage && api.storage.session) {
-    api.storage.session.get(["status", "proxyToken"]).then((v) => {
+    api.storage.session.get("status").then((v) => {
       if (!v) return;
-      if (v.proxyToken && !proxyToken) proxyToken = v.proxyToken;
       if (v.status && !status.proxyPort) {
         status = Object.assign({}, status, { tailnet: v.status.tailnet || status.tailnet });
         pushToPopups();

@@ -711,7 +711,9 @@ test("a host restart rotates both the port and the token", async () => {
     "a challenge from the dead port");
 });
 
-test("the token never reaches storage.local or the popup", async () => {
+// FIX 1 (REVIEW.md). The token is written nowhere at all: a saved one is stale
+// by construction, because the host dies with the worker that started it.
+test("the token is never stored or pushed anywhere", async () => {
   const env = makeEnv();
   await flush();
   const port = env.openPopup();
@@ -720,12 +722,46 @@ test("the token never reaches storage.local or the popup", async () => {
 
   const local = JSON.stringify(env.log.localSet);
   if (local.indexOf(TOKEN) !== -1) throw new Error("the token was written to storage.local: " + local);
+  const session = JSON.stringify(env.log.sessionSet);
+  if (session.indexOf(TOKEN) !== -1) throw new Error("the token was written to storage.session: " + session);
   const pushed = JSON.stringify(env.popupMessages);
   if (pushed.indexOf(TOKEN) !== -1) throw new Error("the token was pushed to the popup: " + pushed);
-  // It is kept in storage.session, which is cleared when the browser closes.
-  const session = JSON.stringify(env.log.sessionSet);
-  if (session.indexOf(TOKEN) === -1) throw new Error("the token was not kept in storage.session");
   if (port.name !== "popup") throw new Error("the popup port was not opened");
+});
+
+// A token left over in storage.session from an older build must not be picked
+// up: the host that would honour it is long gone.
+test("a token left in storage.session is not restored", async () => {
+  const env = makeEnv({
+    session: { proxyToken: "tok-STALE", status: { state: "Running", proxyPort: 64378, tailnet: "tail4d5e6f.ts.net" } },
+  });
+  await flush();
+  eq(env.authRequired({ isProxy: true, challenger: { host: "127.0.0.1", port: 64378 } }), {},
+    "a challenge answered from storage");
+});
+
+// When the host dies the credential goes with it. Whatever takes the port next
+// is not our proxy, and must not be handed the token.
+test("the token is dropped when the host disconnects", async () => {
+  const env = makeEnv();
+  await flush();
+  env.status(RUNNING_AUTH);
+  await flush();
+  const ours = { isProxy: true, challenger: { host: "127.0.0.1", port: 64378 } };
+  eq(env.authRequired(ours), { authCredentials: { username: "tailtab", password: TOKEN } },
+    "while the host is up");
+
+  env.disconnect();
+  await flush();
+  eq(env.authRequired(ours), {}, "a challenge from the old port after the host died");
+  eq(vm.runInContext("proxyToken", env.ctx), "", "the token in memory");
+
+  // And the replacement host's token is the one used from then on.
+  env.runNextTimer(); // the reconnect
+  env.status({ state: "Running", proxyPort: 64378, tailnet: "tail4d5e6f.ts.net", proxyToken: "tok-BBBB2222" });
+  await flush();
+  eq(env.authRequired(ours), { authCredentials: { username: "tailtab", password: "tok-BBBB2222" } },
+    "after the reconnect");
 });
 
 // Zen authenticates SOCKS5 in-protocol, which Chromium cannot do at all.
