@@ -88,7 +88,7 @@ func (b *nodeBackend) Status() *nm.Event {
 		})
 	}
 	for _, a := range st.Accounts {
-		ev.Accounts = append(ev.Accounts, nm.Account{ID: a.ID, Name: a.Name, Tailnet: a.Tailnet, Active: a.Active})
+		ev.Accounts = append(ev.Accounts, nm.Account{ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Picture: a.Picture, Tailnet: a.Tailnet, Active: a.Active})
 	}
 	for _, p := range st.Peers {
 		ev.Peers = append(ev.Peers, nm.Peer{Name: p.Name, DNSName: p.DNSName, IP: p.IP, Online: p.Online, OS: p.OS})

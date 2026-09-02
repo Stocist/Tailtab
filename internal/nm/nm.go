@@ -63,8 +63,11 @@ type Request struct {
 // switcher in the popup.
 type Account struct {
 	ID string `json:"id"`
-	// Name is the login name, e.g. "user@github".
-	Name string `json:"name"`
+	// Name is the login name, e.g. "user@github"; DisplayName the human one,
+	// e.g. "Alice"; Picture the avatar URL the identity provider gave.
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName,omitempty"`
+	Picture     string `json:"picture,omitempty"`
 	// Tailnet is the MagicDNS suffix of that account's tailnet.
 	Tailnet string `json:"tailnet,omitempty"`
 	Active  bool   `json:"active"`

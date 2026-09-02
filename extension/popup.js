@@ -24,6 +24,10 @@ let awaitingLogin = false;
 // host reports a state that shows it happened.
 let switchingTo = "";
 let menuOpen = false;
+const BUILD = "__TAILTAB_BUILD__";
+// How long a switch may take before the popup stops claiming it is happening.
+const SWITCH_TIMEOUT_MS = 20000;
+let switchTimer = null;
 const MAX_MACHINES = 8;
 // How many machines to show before anything is typed.
 const PREVIEW_MACHINES = 3;
@@ -88,19 +92,20 @@ function renderAccount(msg, st, running) {
     name = "Switching…";
     tailnet = switchingTo === "new" ? "adding an account" : "";
   } else if (active) {
-    name = active.name || "Signed in";
+    name = accountLabel(active);
     tailnet = active.tailnet || st.tailnet || "";
   } else if (running || st.tailnet) {
-    name = "Signed in";
+    // The worker has no account list. That happens for a moment on startup,
+    // and permanently when the worker is from an older build (see the build
+    // check in render); either way the tailnet is the honest thing to show.
+    name = st.hostname ? st.hostname : "This profile";
     tailnet = st.tailnet || "";
   } else if (st.state === "NeedsLogin") {
     name = "Not logged in";
   }
   setText("accountname", name);
   setText("accounttailnet", tailnet);
-  // The avatar letter is the account's, and only the account's: a placeholder
-  // like "Not logged in" gets the neutral mark.
-  setText("avatar", active && active.name && /^[a-z0-9]/i.test(active.name) ? active.name[0].toUpperCase() : "t");
+  renderAvatar(active);
   el("account").disabled = !msg.connected;
 
   // The menu: every held account, then "Add account…".
@@ -112,10 +117,10 @@ function renderAccount(msg, st, running) {
     item.setAttribute && item.setAttribute("role", "menuitem");
     const who = document.createElement("span");
     const b = document.createElement("b");
-    b.textContent = account.name || "(unnamed)";
+    b.textContent = accountLabel(account);
     const t = document.createElement("span");
     t.className = "tn";
-    t.textContent = account.tailnet || "";
+    t.textContent = account.tailnet || account.name || "";
     who.appendChild(b);
     who.appendChild(t);
     item.appendChild(who);
@@ -137,17 +142,60 @@ function renderAccount(msg, st, running) {
   menu.hidden = !menuOpen;
 }
 
+// accountLabel is what an account is called in the UI: the display name the
+// identity provider gave, falling back to the login name.
+function accountLabel(account) {
+  return account.displayName || account.name || "Signed in";
+}
+
+// renderAvatar shows the account's picture, or its initial, or the neutral
+// mark when there is no account.
+function renderAvatar(active) {
+  const avatar = el("avatar");
+  const label = active ? accountLabel(active) : "";
+  const letter = label && /^[a-z0-9]/i.test(label) ? label[0].toUpperCase() : "t";
+  const picture = active && active.picture && /^https:\/\//.test(active.picture) ? active.picture : "";
+  if (picture) {
+    avatar.textContent = "";
+    const img = document.createElement("img");
+    img.src = picture;
+    img.alt = label;
+    img.addEventListener("error", () => {
+      avatar.textContent = letter;
+    });
+    avatar.appendChild(img);
+  } else {
+    avatar.textContent = letter;
+  }
+}
+
+function beginSwitch(target) {
+  switchingTo = target;
+  if (switchTimer) clearTimeout(switchTimer);
+  // A switch the host never confirms must not leave the popup lying about
+  // it; after the deadline the last real status is shown again.
+  switchTimer = setTimeout(() => {
+    switchTimer = null;
+    if (!switchingTo) return;
+    switchingTo = "";
+    if (latest) {
+      render(latest);
+      setText("hint", "The tailtab host did not confirm the change. Reload the extension and try again.");
+    }
+  }, SWITCH_TIMEOUT_MS);
+}
+
 function switchAccount(account) {
   closeMenu();
   if (account.active) return;
-  switchingTo = account.id;
+  beginSwitch(account.id);
   port.postMessage({ cmd: "switch", id: account.id });
   if (latest) render(latest);
 }
 
 function addAccount() {
   closeMenu();
-  switchingTo = "new";
+  beginSwitch("new");
   port.postMessage({ cmd: "addaccount" });
   if (latest) render(latest);
 }
@@ -287,6 +335,10 @@ function render(msg) {
       st.error
     ) {
       switchingTo = "";
+      if (switchTimer) {
+        clearTimeout(switchTimer);
+        switchTimer = null;
+      }
     }
   }
 
@@ -334,7 +386,8 @@ function render(msg) {
   toggle.setAttribute && toggle.setAttribute("aria-checked", running ? "true" : "false");
   toggle.disabled = !msg.connected || !!switchingTo || (!running && state !== "Stopped" && !st.authURL && state !== "NeedsLogin");
 
-  el("details").hidden = !running;
+  // While a switch is in flight the old account's details are stale.
+  el("details").hidden = !running || !!switchingTo;
   if (running) {
     setText("tailnet", st.tailnet || "unknown");
     setText("hostname", st.hostname || "unknown");
@@ -356,7 +409,14 @@ function render(msg) {
   renderMachines(st, running);
 
   const warning = el("warning");
-  if (msg.proxyProblem) {
+  if (msg.build !== BUILD) {
+    // The worker answering us is from another build. Chromium keeps the old
+    // worker across browser restarts, so the popup can be new while the
+    // worker still lacks the commands it sends.
+    warning.hidden = false;
+    warning.className = "bad";
+    warning.textContent = "tailtab was updated. Reload the extension (edge://extensions or about:debugging) to finish.";
+  } else if (msg.proxyProblem) {
     warning.hidden = false;
     warning.className = "";
     warning.textContent = msg.proxyProblem;

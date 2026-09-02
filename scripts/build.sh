@@ -29,18 +29,28 @@ dist="$src/dist"
 # never reaches a browser.
 shared=(background.js rules.js popup.html popup.js)
 
+# Every build gets an id (the commit, plus -dirty when the tree has edits) and
+# a manifest version that grows with the commit count. Chromium keeps an
+# extension's background worker cached across browser restarts; a changed
+# manifest version makes it treat the reload as an update and start fresh, and
+# the popup compares its own id with the worker's to say when they differ.
+build_id="${commit}$(git -C "$root" diff --quiet 2>/dev/null || echo -dirty)"
+ext_version="0.1.$(git -C "$root" rev-list --count HEAD 2>/dev/null || echo 0)"
+
 rm -rf "$dist"
 for target in chromium firefox; do
   out="$dist/$target"
   mkdir -p "$out/icons"
   for f in "${shared[@]}"; do
-    cp "$src/$f" "$out/$f"
+    sed -e "s/__TAILTAB_BUILD__/${build_id}/g" "$src/$f" > "$out/$f"
   done
   cp "$src"/icons/*.png "$out/icons/"
 done
 
-cp "$src/manifest.chromium.json" "$dist/chromium/manifest.json"
-cp "$src/manifest.firefox.json" "$dist/firefox/manifest.json"
+# The manifest version is what makes Chromium notice a rebuilt unpacked
+# extension on the next browser start (see build_id above).
+sed -e "s/\"version\": \"[0-9.]*\"/\"version\": \"${ext_version}\"/" "$src/manifest.chromium.json" > "$dist/chromium/manifest.json"
+sed -e "s/\"version\": \"[0-9.]*\"/\"version\": \"${ext_version}\"/" "$src/manifest.firefox.json" > "$dist/firefox/manifest.json"
 
 echo "built $dist/chromium and $dist/firefox"
 echo "run ./scripts/test.sh to check the host and the extension"

@@ -20,6 +20,11 @@ const api = typeof browser !== "undefined" ? browser : chrome;
 const USE_ON_REQUEST = typeof api.proxy !== "undefined" && typeof api.proxy.onRequest !== "undefined";
 const BROWSER = USE_ON_REQUEST ? "zen" : "edge";
 const HOST_NAME = "com.stocist.tailtab";
+// Stamped by scripts/build.sh. The popup compares it with its own copy: a
+// mismatch means Chromium is running a background worker from an older build
+// than the popup files, which a browser restart does not fix but an extension
+// reload does.
+const BUILD = "__TAILTAB_BUILD__";
 // The username half of the proxy credential. The password is the per-process
 // token the host sends with every status event.
 const PROXY_USER = "tailtab";
@@ -482,7 +487,7 @@ api.runtime.onConnect.addListener((port) => {
 });
 
 function pushToPopups() {
-  const payload = { status: status, proxyProblem: proxyProblem, browser: BROWSER, connected: !!nativePort };
+  const payload = { status: status, proxyProblem: proxyProblem, browser: BROWSER, connected: !!nativePort, build: BUILD };
   for (const port of popups) {
     try {
       port.postMessage(payload);

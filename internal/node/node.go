@@ -43,10 +43,15 @@ type ExitNode struct {
 // live in one node's state; switching between them is a LocalAPI call, and
 // each keeps its own node key on its own tailnet.
 type Account struct {
-	ID      string
-	Name    string
-	Tailnet string
-	Active  bool
+	ID string
+	// Name is the login name, e.g. "user@github"; DisplayName is the
+	// human one the identity provider gave, e.g. "Alice"; Picture is the
+	// avatar URL, if any.
+	Name        string
+	DisplayName string
+	Picture     string
+	Tailnet     string
+	Active      bool
 }
 
 // Peer is one machine on the current tailnet, for the popup's search.
@@ -420,10 +425,12 @@ func accountsFrom(current ipn.LoginProfile, all []ipn.LoginProfile) []Account {
 	accounts := make([]Account, 0, len(all))
 	for _, p := range all {
 		accounts = append(accounts, Account{
-			ID:      string(p.ID),
-			Name:    p.Name,
-			Tailnet: strings.TrimSuffix(p.NetworkProfile.MagicDNSName, "."),
-			Active:  p.ID != "" && p.ID == current.ID,
+			ID:          string(p.ID),
+			Name:        p.Name,
+			DisplayName: p.UserProfile.DisplayName,
+			Picture:     p.UserProfile.ProfilePicURL,
+			Tailnet:     strings.TrimSuffix(p.NetworkProfile.MagicDNSName, "."),
+			Active:      p.ID != "" && p.ID == current.ID,
 		})
 	}
 	slices.SortFunc(accounts, func(a, b Account) int { return strings.Compare(a.Name, b.Name) })

@@ -555,6 +555,9 @@ function openPopupUI() {
   return {
     els: els,
     push(payload) {
+      // A test payload comes from a worker of this build unless it says
+      // otherwise.
+      if (payload && payload.build === undefined) payload = Object.assign({ build: "__TAILTAB_BUILD__" }, payload);
       for (const fn of backgroundPort.listeners) fn(payload);
     },
     warningTexts: () => els.warnings.children.map((c) => c.textContent),
@@ -1332,7 +1335,7 @@ test("the account switcher lists held accounts and switches on click", () => {
       ],
     }),
   });
-  eq(ui.els.accountname.textContent, "stocist@github", "header name");
+  eq(ui.els.accountname.textContent, "stocist@github", "header name falls back to the login name");
   eq(ui.els.accounttailnet.textContent, "tail1a2b3c.ts.net", "header tailnet");
   eq(ui.accountItems().map((i) => i.label), ["stocist@github", "bob@example.com", "", "+ Add account…"], "menu entries");
   eq(ui.accountItems()[0].className, "item on", "the active account is marked");
@@ -1433,6 +1436,31 @@ test("more machines than the preview shows are counted, not listed", () => {
   eq(rows.length, 4, "three machines and the count line");
   eq(rows[3].name, "18 more · type to filter", "the count line");
   eq(rows.slice(0, 3).every((r) => r.className === "name"), true, "online machines come first");
+});
+
+test("the header shows the display name and picture when the account has them", () => {
+  const ui = openPopupUI();
+  ui.push({
+    connected: true,
+    status: { state: "Running", tailnet: "tail1a2b3c.ts.net", hostname: "laptop-tailtab-edge", proxyPort: 1, warnings: [],
+      accounts: [{ id: "p1", name: "alice@github", displayName: "Alice", picture: "https://avatars.githubusercontent.com/u/1?v=4", tailnet: "tail1a2b3c.ts.net", active: true }] },
+  });
+  eq(ui.els.accountname.textContent, "Alice", "display name, not the login name");
+  eq(ui.els.avatar.children.length, 1, "the avatar is a picture");
+  eq(ui.els.avatar.children[0].src, "https://avatars.githubusercontent.com/u/1?v=4", "picture url");
+  eq(ui.accountItems()[0].label, "Alice", "menu entry uses the display name too");
+});
+
+test("a worker from another build is reported instead of silently ignored", () => {
+  const ui = openPopupUI();
+  ui.push({ connected: true, build: "older", status: { state: "Running", tailnet: "t.ts.net", hostname: "mac-tailtab-edge", proxyPort: 1, warnings: [] } });
+  eq(ui.els.warning.hidden, false, "the banner is shown");
+  if (!/Reload the extension/.test(ui.els.warning.textContent)) throw new Error("banner text: " + ui.els.warning.textContent);
+  eq(ui.els.accountname.textContent, "mac-tailtab-edge", "the header does not pretend to know the account");
+  // An old worker sends no build at all: same treatment.
+  const ui2 = openPopupUI();
+  ui2.push({ connected: true, build: null, status: { state: "Running", tailnet: "t.ts.net", proxyPort: 1, warnings: [] } });
+  eq(ui2.els.warning.hidden, false, "a worker with no build id is treated as old");
 });
 (async () => {
   let failed = 0;

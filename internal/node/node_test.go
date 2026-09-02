@@ -550,7 +550,8 @@ func TestLoginWithoutAClientStillWorksInTests(t *testing.T) {
 }
 
 func TestAccountsComeFromTheLoginProfiles(t *testing.T) {
-	current := ipn.LoginProfile{ID: "p1", Name: "stocist@github", NetworkProfile: ipn.NetworkProfile{MagicDNSName: "tail1a2b3c.ts.net."}}
+	current := ipn.LoginProfile{ID: "p1", Name: "stocist@github", NetworkProfile: ipn.NetworkProfile{MagicDNSName: "tail1a2b3c.ts.net."},
+		UserProfile: tailcfg.UserProfile{LoginName: "stocist@github", DisplayName: "Alice", ProfilePicURL: "https://example.com/a.png"}}
 	all := []ipn.LoginProfile{
 		{ID: "p2", Name: "bob@example.com", NetworkProfile: ipn.NetworkProfile{MagicDNSName: "tail4d5e6f.ts.net"}},
 		current,
@@ -558,7 +559,7 @@ func TestAccountsComeFromTheLoginProfiles(t *testing.T) {
 	got := accountsFrom(current, all)
 	want := []Account{
 		{ID: "p2", Name: "bob@example.com", Tailnet: "tail4d5e6f.ts.net"},
-		{ID: "p1", Name: "stocist@github", Tailnet: "tail1a2b3c.ts.net", Active: true},
+		{ID: "p1", Name: "stocist@github", DisplayName: "Alice", Picture: "https://example.com/a.png", Tailnet: "tail1a2b3c.ts.net", Active: true},
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("accounts = %+v, want %+v", got, want)
