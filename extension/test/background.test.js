@@ -1421,7 +1421,7 @@ test("the machine search filters peers and offers their addresses", () => {
   eq(ui.machineRows().map((r) => r.name), ["server", "relay", "pc"], "the first few are listed up front, online first");
   ui.search("ser");
   eq(ui.machineRows().map((r) => r.name + " " + r.ip), ["server 100.80.1.7"], "a name match");
-  ui.search("100.66");
+  ui.search("1.94");
   eq(ui.machineRows().map((r) => r.name), ["pc"], "an address match");
   eq(ui.machineRows()[0].className, "name off", "an offline peer is marked");
   ui.search("zzz");
