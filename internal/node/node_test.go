@@ -503,3 +503,48 @@ func TestExitNodeChangesCountAsAChange(t *testing.T) {
 		t.Error("an exit node becoming active compares equal")
 	}
 }
+
+// Seen live: after Log out, the auth page offered to connect "Laptop" — the
+// OS hostname — because lc.Logout resets the prefs and tsnet only applies the
+// node's own at Start. The prefs go back before every login request.
+func TestLoginRestoresTheHostnameAfterALogout(t *testing.T) {
+	n, logins, _ := newTestNode(t)
+	n.hostname = "mac-tailtab-edge"
+	var order []string
+	n.editPrefs = func(_ context.Context, mp *ipn.MaskedPrefs) (*ipn.Prefs, error) {
+		order = append(order, "prefs")
+		if !mp.HostnameSet || mp.Prefs.Hostname != "mac-tailtab-edge" {
+			t.Errorf("hostname not restored: %+v", mp)
+		}
+		if !mp.WantRunningSet || !mp.Prefs.WantRunning {
+			t.Errorf("WantRunning not restored: %+v", mp)
+		}
+		return &mp.Prefs, nil
+	}
+	login := n.startLogin
+	n.startLogin = func(ctx context.Context) error {
+		order = append(order, "login")
+		return login(ctx)
+	}
+	if err := n.requestLogin(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(order, ","), "prefs,login"; got != want {
+		t.Fatalf("call order %q, want %q", got, want)
+	}
+	if *logins != 1 {
+		t.Fatalf("logins = %d, want 1", *logins)
+	}
+}
+
+func TestLoginWithoutAClientStillWorksInTests(t *testing.T) {
+	// No editPrefs and no hostname, as the older tests set things up: the
+	// login path must not need them.
+	n, logins, _ := newTestNode(t)
+	if err := n.requestLogin(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if *logins != 1 {
+		t.Fatalf("logins = %d, want 1", *logins)
+	}
+}

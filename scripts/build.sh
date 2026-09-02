@@ -13,8 +13,15 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
 go="${GO:-go}"
-echo "building bin/tailtab"
-"$go" build -o bin/tailtab ./cmd/tailtab
+# Stamp the embedded Tailscale version so the admin console and the login page
+# show "1.102.3-tailtab-<commit>" instead of the "-dev" string tsnet reports for
+# an unstamped build. The version is whatever go.mod pins.
+ts_version="$("$go" list -m -f '{{.Version}}' tailscale.com)"
+ts_version="${ts_version#v}"
+commit="$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+ldflags="-X tailscale.com/version.longStamp=${ts_version}-tailtab-${commit} -X tailscale.com/version.shortStamp=${ts_version}"
+echo "building bin/tailtab (tailscale ${ts_version}-tailtab-${commit})"
+"$go" build -ldflags "$ldflags" -o bin/tailtab ./cmd/tailtab
 
 src="extension"
 dist="$src/dist"

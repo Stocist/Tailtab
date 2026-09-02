@@ -112,8 +112,14 @@ type Node struct {
 	readStatus func(context.Context) (*ipnstate.Status, error)
 	// editPrefs is lc.EditPrefs, a field for the same reason.
 	editPrefs func(context.Context, *ipn.MaskedPrefs) (*ipn.Prefs, error)
-	started   bool
-	st        Status
+	// hostname is the control-plane name this node was started with. tsnet
+	// applies it once, at Start; a logout resets the prefs to their defaults,
+	// so it has to be put back before the next login or the node registers
+	// under the OS hostname (seen live: "Laptop" on the auth page instead of
+	// "laptop-tailtab-edge").
+	hostname string
+	started  bool
+	st       Status
 }
 
 // New returns a Node that calls onChange whenever its status changes.
@@ -189,6 +195,7 @@ func (n *Node) Start(profileID, browser string) error {
 	}
 	n.ts = ts
 	n.started = true
+	n.hostname = ts.Hostname
 	n.st.Hostname = ts.Hostname
 	n.mu.Unlock()
 
@@ -563,11 +570,41 @@ func (n *Node) requestLogin(ctx context.Context) error {
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	// A logout reset the prefs, and tsnet only sets ours at Start. Put the
+	// hostname and WantRunning back first, so the login that follows registers
+	// this node under its own name and comes up running.
+	if err := n.reapplyPrefs(ctx); err != nil {
+		n.mu.Lock()
+		n.loginRequested = false
+		n.mu.Unlock()
+		return err
+	}
 	if err := login(ctx); err != nil {
 		n.mu.Lock()
 		n.loginRequested = false // it did not take; allow another attempt
 		n.mu.Unlock()
 		return fmt.Errorf("starting interactive login: %w", err)
+	}
+	return nil
+}
+
+// reapplyPrefs restores the prefs tsnet set at Start and a logout wiped: the
+// hostname and WantRunning. It is what keeps a re-login from registering the
+// node under the machine's own name.
+func (n *Node) reapplyPrefs(ctx context.Context) error {
+	n.mu.Lock()
+	edit := n.editPrefs
+	hostname := n.hostname
+	n.mu.Unlock()
+	if edit == nil || hostname == "" {
+		return nil
+	}
+	if _, err := edit(ctx, &ipn.MaskedPrefs{
+		Prefs:          ipn.Prefs{Hostname: hostname, WantRunning: true},
+		HostnameSet:    true,
+		WantRunningSet: true,
+	}); err != nil {
+		return fmt.Errorf("restoring the node's prefs before login: %w", err)
 	}
 	return nil
 }
