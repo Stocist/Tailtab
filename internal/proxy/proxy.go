@@ -527,7 +527,9 @@ func (s *Server) handler() http.Handler {
 		if !s.authorized(r.Header.Get("Proxy-Authorization")) {
 			w.Header().Set("Proxy-Authenticate", `Basic realm="tailtab"`)
 			w.Header().Set("Connection", "close")
-			http.Error(w, "tailtab: proxy authentication required", http.StatusProxyAuthRequired)
+			// The body is what a browser shows when it reaches this proxy
+			// without the extension's credential, so say what to do about it.
+			http.Error(w, "tailtab: proxy authentication required\n\nThis request reached the tailtab proxy without the extension's credential, which usually means the browser is holding proxy settings from an earlier tailtab host. Reopen the tailtab popup and reload the page.", http.StatusProxyAuthRequired)
 			return
 		}
 		// This is also what strips Proxy-Authorization from a plain request

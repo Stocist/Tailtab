@@ -9,7 +9,7 @@
       "strict_min_version": "128.0"
     }
   },
-  "permissions": ["nativeMessaging", "proxy", "storage", "tabs"],
+  "permissions": ["nativeMessaging", "proxy", "storage", "tabs", "alarms"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "scripts": ["rules.js", "background.js"]

@@ -56,6 +56,16 @@ let initSent = false;
 let reconnectDelay = RECONNECT_MIN_MS;
 let reconnectTimer = null;
 const popups = new Set();
+// Resolves once the proxy settings left behind by an earlier life of this
+// worker have been dealt with (see dropStaleProxy). applyProxy waits on it so a
+// fast host cannot have its fresh PAC wiped by the startup sweep.
+let proxySettled = Promise.resolve();
+
+// The heartbeat alarm. Chromium may put the service worker to sleep with the
+// host dead and a reconnect timer pending — timers do not survive that, alarms
+// do. One minute is the MV3 floor.
+const HEARTBEAT_ALARM = "tailtab-heartbeat";
+const HEARTBEAT_MINUTES = 1;
 
 // ---------------------------------------------------------------- proxy layer
 
@@ -91,16 +101,70 @@ if (USE_ON_REQUEST) {
   );
 }
 
+// How long a proxy challenge may wait for the host to report its port and
+// token before we give up and decline. The whole point of asyncBlocking is that
+// we are allowed this pause; declining instead is what puts Chromium's own
+// password dialog in front of the user.
+const AUTH_WAIT_MS = 8000;
+
+// Whoever is waiting for the next status event, with the timer that gives up on
+// it.
+let statusWaiters = [];
+
+function whenHostAnswers(timeoutMs) {
+  if (status.proxyPort && proxyToken) return Promise.resolve();
+  return new Promise((resolve) => {
+    const waiter = {};
+    waiter.done = () => {
+      clearTimeout(waiter.timer);
+      statusWaiters = statusWaiters.filter((w) => w !== waiter);
+      resolve();
+    };
+    waiter.timer = setTimeout(waiter.done, timeoutMs);
+    statusWaiters.push(waiter);
+  });
+}
+
+function wakeStatusWaiters() {
+  for (const waiter of statusWaiters.slice()) waiter.done();
+}
+
 // proxyAuthAnswer decides what to tell Chromium about one authentication
 // challenge. It answers only our own listener: onAuthRequired fires for every
 // 401 and 407 in the browser, so an unscoped handler would hand the token to
 // any site or proxy that asked for one.
-function proxyAuthAnswer(details) {
+//
+// It is async for one reason. Chromium can wake the service worker *with* this
+// event, and a worker that has just started has no port and no token until the
+// host answers its init, which is a round trip away. Answering "no credentials"
+// in that window is what produces a proxy-password dialog, or the proxy's own
+// 407 page, on a browser that is configured correctly and has simply not caught
+// up yet.
+async function proxyAuthAnswer(details) {
   if (!details || details.isProxy !== true) return {};
   const challenger = details.challenger || {};
   if (String(challenger.host) !== "127.0.0.1") return {};
-  if (!status.proxyPort || Number(challenger.port) !== Number(status.proxyPort)) return {};
-  if (!proxyToken) return {};
+
+  if (!proxyToken || !status.proxyPort) {
+    // Make sure something is actually on its way, then wait for it.
+    connect();
+    await whenHostAnswers(AUTH_WAIT_MS);
+  }
+  if (!proxyToken || !status.proxyPort) return {};
+
+  if (Number(challenger.port) !== Number(status.proxyPort)) {
+    // The browser is still pointed at a proxy we no longer run — a PAC left
+    // behind by an earlier host process, or by an earlier version of this
+    // extension. Rewrite it so the next attempt reaches the live one, and
+    // decline this one: whatever is on that port now is not ours to trust.
+    // Declining, not cancelling: from here a stale tailtab port and somebody
+    // else's local proxy look the same, and cancelling would break the
+    // latter's own login. The startup sweep (dropStaleProxy) is what keeps
+    // this path rare.
+    console.warn("tailtab: a proxy challenge came from port " + challenger.port + ", but our proxy is on " + status.proxyPort + "; reinstalling the proxy settings");
+    applyProxy();
+    return {};
+  }
   return { authCredentials: { username: PROXY_USER, password: proxyToken } };
 }
 
@@ -111,10 +175,14 @@ function proxyAuthAnswer(details) {
 if (!USE_ON_REQUEST && api.webRequest && api.webRequest.onAuthRequired) {
   api.webRequest.onAuthRequired.addListener(
     (details, callback) => {
-      // Always answer, and answer now. A handler that is slow, or that
-      // cancels, puts Chromium's own proxy-password dialog in front of the
-      // user; an empty answer just means "I have no credentials for this".
-      if (typeof callback === "function") callback(proxyAuthAnswer(details));
+      // Always answer, and never cancel: a cancelled challenge is the dialog
+      // again. The answer may take a moment, which asyncBlocking allows, but it
+      // always comes.
+      if (typeof callback !== "function") return;
+      proxyAuthAnswer(details).then(callback, (e) => {
+        console.warn("tailtab: answering a proxy challenge failed:", e);
+        callback({});
+      });
     },
     { urls: ["<all_urls>"] },
     ["asyncBlocking"]
@@ -125,6 +193,7 @@ if (!USE_ON_REQUEST && api.webRequest && api.webRequest.onAuthRequired) {
 // already covers it and there is nothing to install.
 async function applyProxy() {
   if (USE_ON_REQUEST) return;
+  await proxySettled;
   const port = status.proxyPort;
   if (!port) return;
 
@@ -195,6 +264,24 @@ async function applyProxy() {
 async function clearProxy() {
   if (USE_ON_REQUEST) return;
   await new Promise((resolve) => chrome.proxy.settings.clear({ scope: "regular" }, resolve));
+}
+
+// dropStaleProxy runs once, when the worker starts. Chromium keeps an
+// extension's proxy setting across service-worker restarts and extension
+// reloads, but the host process does not survive either, so a PAC found at
+// startup always points at a port from an earlier life. Seen live in Edge: the
+// old host still answering 407 on the old port, the new worker holding a token
+// for the new one, and a proxy-password dialog for the user. Until the new
+// host is Running there is nothing to route through, and a direct failure is
+// the honest answer; applyProxy installs the real thing as soon as there is.
+async function dropStaleProxy() {
+  if (USE_ON_REQUEST) return;
+  const control = await new Promise((resolve) =>
+    chrome.proxy.settings.get({}, (v) => resolve(v && v.levelOfControl))
+  );
+  if (control !== "controlled_by_this_extension") return;
+  console.warn("tailtab: dropping the proxy settings left by an earlier worker");
+  await clearProxy();
 }
 
 // ------------------------------------------------------------- native host IO
@@ -284,6 +371,8 @@ function onHostMessage(msg) {
   // Kept out of status: the popup is sent status, and the token must never go
   // there. It arrives with every status event and rotates with the host.
   proxyToken = msg.proxyToken || "";
+  // A challenge may be parked waiting for exactly this.
+  if (proxyToken && msg.proxyPort) wakeStatusWaiters();
 
   setStatus({
     state: msg.state || "",
@@ -408,6 +497,10 @@ async function loadProfileID() {
 
 // ----------------------------------------------------------------- entry point
 
+// Whatever proxy setting an earlier worker left behind goes first, before any
+// host can report a port to route through.
+proxySettled = dropStaleProxy().catch(() => {});
+
 // Connect at the top level so the port is open as early as possible: on
 // Chromium the open port is what keeps the service worker alive.
 connect();
@@ -416,6 +509,18 @@ connect();
 // the host unstarted until the popup is opened.
 api.runtime.onStartup.addListener(connect);
 api.runtime.onInstalled.addListener(connect);
+
+// The heartbeat: if the host is gone and the reconnect timer died with a
+// sleeping worker, this is what brings it back without the user opening the
+// popup. Registered at the top level, like every listener, so the alarm can
+// wake the worker.
+if (api.alarms) {
+  api.alarms.create(HEARTBEAT_ALARM, { periodInMinutes: HEARTBEAT_MINUTES });
+  api.alarms.onAlarm.addListener((alarm) => {
+    if (!alarm || alarm.name !== HEARTBEAT_ALARM) return;
+    if (!nativePort) connect();
+  });
+}
 
 loadProfileID().then((id) => {
   profileID = id;

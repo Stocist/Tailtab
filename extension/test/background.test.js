@@ -37,7 +37,7 @@ function pacTarget(value) {
 // makeEnv builds a stubbed Chromium and loads background.js into it.
 function makeEnv(options) {
   const opts = options || {};
-  const log = { set: [], clear: [], sent: [], sentFull: [], timers: [], connects: 0, localSet: [], sessionSet: [], lastPac: "" };
+  const log = { set: [], clear: [], sent: [], sentFull: [], timers: [], connects: 0, localSet: [], sessionSet: [], lastPac: "", alarms: [] };
   const mkEvent = () => {
     const fns = [];
     return { addListener: (f) => fns.push(f), _fire: (...a) => fns.forEach((f) => f(...a)) };
@@ -94,6 +94,7 @@ function makeEnv(options) {
       },
     },
     tabs: { create() {} },
+    alarms: { create: (name, info) => { log.alarms.push({ name: name, info: info }); }, onAlarm: mkEvent() },
     webRequest: {
       onAuthRequired: {
         addListener: (fn, filter, extra) => {
@@ -148,15 +149,36 @@ function makeEnv(options) {
     // popup sends a command the way the popup's port does.
     popup(cmd) { vm.runInContext("send(" + JSON.stringify(cmd) + ");", ctx); },
     // authRequired fires an authentication challenge at the registered
-    // onAuthRequired listener and returns what it answered.
+    // onAuthRequired listener and resolves with what it answered. The answer is
+    // asynchronous by design: a worker woken by the challenge itself waits for
+    // the host rather than declining.
     authRequired(details) {
+      return this.authChallenge(details).answer;
+    },
+    // authChallenge is the same, but hands back a handle so a test can assert
+    // that a challenge is still parked, unanswered.
+    authChallenge(details) {
       if (!log.authListener) throw new Error("no onAuthRequired listener was registered");
-      let answer;
-      log.authListener.fn(details, (a) => { answer = a; });
-      if (answer === undefined) throw new Error("the listener never answered the challenge");
-      return answer;
+      const handle = { settled: false, value: undefined };
+      handle.answer = new Promise((resolve) => {
+        log.authListener.fn(details, (a) => {
+          handle.settled = true;
+          handle.value = a;
+          resolve(a);
+        });
+      });
+      return handle;
+    },
+    // runAllTimers fires every pending timer, oldest first, which is how a
+    // waiting challenge reaches its deadline.
+    runAllTimers() {
+      const pending = log.timers.splice(0, log.timers.length);
+      for (const t of pending) t.fn();
+      return pending.length;
     },
     authListener: () => log.authListener,
+    // fireAlarm rings a chrome.alarms alarm, as Chromium would on schedule.
+    fireAlarm(name) { chrome.alarms.onAlarm._fire({ name: name }); },
     // setLevelOfControl changes what proxy.settings.get reports from now on.
     setLevelOfControl(v) { log.levelOfControl = v; },
     // runNextTimer fires the pending reconnect timer and returns its delay.
@@ -205,6 +227,7 @@ function makeFirefoxEnv() {
       session: { get: async () => ({}), set: async (v) => { log.sessionSet.push(v); } },
     },
     tabs: { create() {} },
+    alarms: { create() {}, onAlarm: mkEvent() },
   };
   const sandbox = {
     browser: browserApi,
@@ -684,7 +707,7 @@ test("the proxy challenge is answered only for our own listener", async () => {
   await flush();
 
   const ours = { isProxy: true, challenger: { host: "127.0.0.1", port: 64378 } };
-  eq(env.authRequired(ours), { authCredentials: { username: "tailtab", password: TOKEN } },
+  eq(await env.authRequired(ours), { authCredentials: { username: "tailtab", password: TOKEN } },
     "our own challenger");
 
   const foreign = [
@@ -696,7 +719,7 @@ test("the proxy challenge is answered only for our own listener", async () => {
     ["nothing at all", null],
   ];
   for (const [what, details] of foreign) {
-    eq(env.authRequired(details), {}, "answer to " + what);
+    eq(await env.authRequired(details), {}, "answer to " + what);
   }
 
   // Registered at the top level, for every URL, and asynchronously — the three
@@ -706,15 +729,71 @@ test("the proxy challenge is answered only for our own listener", async () => {
   eq(reg.filter, { urls: ["<all_urls>"] }, "url filter");
 });
 
-test("a challenge with no token yet is answered promptly with nothing", async () => {
+// Found in live Edge: a service worker that Chromium wakes *with* this event
+// has no port and no token until the host answers its init. Declining in that
+// window is what puts a proxy-password dialog, and then the proxy's own 407
+// page, in front of a browser that is configured correctly and simply has not
+// caught up.
+test("a challenge that arrives before the host has answered waits for it", async () => {
   const env = makeEnv();
   await flush();
-  // Running, but the host sent no token: answer at once rather than leaving
-  // the request hanging on a dialog (G13).
-  env.status(RUNNING);
+  // No status at all yet, exactly as a freshly started worker.
+  const challenge = env.authChallenge({ isProxy: true, challenger: { host: "127.0.0.1", port: 64378 } });
   await flush();
-  eq(env.authRequired({ isProxy: true, challenger: { host: "127.0.0.1", port: 64378 } }), {},
-    "answer with no token");
+  if (challenge.settled) {
+    throw new Error("the challenge was declined before the host had a chance to answer: " + JSON.stringify(challenge.value));
+  }
+
+  env.status(RUNNING_AUTH);
+  await flush();
+  eq(await challenge.answer, { authCredentials: { username: "tailtab", password: TOKEN } },
+    "the answer once the host reported its port and token");
+});
+
+test("a challenge the host never answers is declined at the deadline", async () => {
+  const env = makeEnv();
+  await flush();
+  env.status(RUNNING); // Running, but no token in this event
+  await flush();
+  const challenge = env.authChallenge({ isProxy: true, challenger: { host: "127.0.0.1", port: 64378 } });
+  await flush();
+  if (challenge.settled) throw new Error("declined without waiting");
+  env.runAllTimers(); // the deadline passes
+  eq(await challenge.answer, {}, "the answer when the host never came");
+});
+
+// Waiting is only ever for our own proxy. Somebody else's must be answered at
+// once, or every other proxy in the browser stalls for eight seconds.
+test("a challenge from another proxy is declined without waiting", async () => {
+  const env = makeEnv();
+  await flush(); // no token yet, which is when the waiting path is live
+  const foreign = env.authChallenge({ isProxy: true, challenger: { host: "10.0.0.9", port: 3128 } });
+  await flush();
+  if (!foreign.settled) throw new Error("a foreign proxy challenge was parked waiting for our host");
+  eq(foreign.value, {}, "the answer");
+
+  const site = env.authChallenge({ isProxy: false, challenger: { host: "127.0.0.1", port: 64378 } });
+  await flush();
+  if (!site.settled) throw new Error("a site's 401 was parked waiting for our host");
+  eq(site.value, {}, "the answer");
+});
+
+// The other half of the live failure: the browser keeps a PAC across an
+// extension reload, so it can be pointed at a port from a host process that is
+// already gone. Rewriting the settings turns a permanently broken profile into
+// one that fixes itself on the next request.
+test("a challenge from a port we no longer use reinstalls the proxy settings", async () => {
+  const env = makeEnv();
+  await flush();
+  env.status(RUNNING_AUTH);
+  await flush();
+  const before = env.log.set.length;
+
+  eq(await env.authRequired({ isProxy: true, challenger: { host: "127.0.0.1", port: 55555 } }), {},
+    "a challenge from a stale port");
+  await flush();
+  eq(env.log.set.length, before + 1, "the proxy settings were reinstalled");
+  eq(env.log.set[env.log.set.length - 1], "PROXY 127.0.0.1:64378", "and they point at the live proxy");
 });
 
 test("a host restart rotates both the port and the token", async () => {
@@ -722,7 +801,7 @@ test("a host restart rotates both the port and the token", async () => {
   await flush();
   env.status({ state: "Running", proxyPort: 1111, tailnet: "tail4d5e6f.ts.net", proxyToken: "first-token" });
   await flush();
-  eq(env.authRequired({ isProxy: true, challenger: { host: "127.0.0.1", port: 1111 } }),
+  eq(await env.authRequired({ isProxy: true, challenger: { host: "127.0.0.1", port: 1111 } }),
     { authCredentials: { username: "tailtab", password: "first-token" } }, "the first token");
 
   env.disconnect();
@@ -732,10 +811,10 @@ test("a host restart rotates both the port and the token", async () => {
   await flush();
 
   eq(env.log.set, ["PROXY 127.0.0.1:1111", "PROXY 127.0.0.1:2222"], "the PAC follows the new port");
-  eq(env.authRequired({ isProxy: true, challenger: { host: "127.0.0.1", port: 2222 } }),
+  eq(await env.authRequired({ isProxy: true, challenger: { host: "127.0.0.1", port: 2222 } }),
     { authCredentials: { username: "tailtab", password: "second-token" } }, "the new token");
   // The old port is not ours any more.
-  eq(env.authRequired({ isProxy: true, challenger: { host: "127.0.0.1", port: 1111 } }), {},
+  eq(await env.authRequired({ isProxy: true, challenger: { host: "127.0.0.1", port: 1111 } }), {},
     "a challenge from the dead port");
 });
 
@@ -764,8 +843,10 @@ test("a token left in storage.session is not restored", async () => {
     session: { proxyToken: "tok-STALE", status: { state: "Running", proxyPort: 64378, tailnet: "tail4d5e6f.ts.net" } },
   });
   await flush();
-  eq(env.authRequired({ isProxy: true, challenger: { host: "127.0.0.1", port: 64378 } }), {},
-    "a challenge answered from storage");
+  const challenge = env.authChallenge({ isProxy: true, challenger: { host: "127.0.0.1", port: 64378 } });
+  await flush();
+  env.runAllTimers(); // the host never answers in this test
+  eq(await challenge.answer, {}, "a challenge answered from storage");
 });
 
 // When the host dies the credential goes with it. Whatever takes the port next
@@ -776,20 +857,21 @@ test("the token is dropped when the host disconnects", async () => {
   env.status(RUNNING_AUTH);
   await flush();
   const ours = { isProxy: true, challenger: { host: "127.0.0.1", port: 64378 } };
-  eq(env.authRequired(ours), { authCredentials: { username: "tailtab", password: TOKEN } },
+  eq(await env.authRequired(ours), { authCredentials: { username: "tailtab", password: TOKEN } },
     "while the host is up");
 
   env.disconnect();
   await flush();
-  eq(env.authRequired(ours), {}, "a challenge from the old port after the host died");
   eq(vm.runInContext("proxyToken", env.ctx), "", "the token in memory");
-
-  // And the replacement host's token is the one used from then on.
-  env.runNextTimer(); // the reconnect
+  // A challenge now waits for the replacement host rather than declining, and
+  // the replacement's token is the one that answers it.
+  const challenge = env.authChallenge(ours);
+  await flush();
+  if (challenge.settled) throw new Error("declined instead of waiting for the replacement host");
   env.status({ state: "Running", proxyPort: 64378, tailnet: "tail4d5e6f.ts.net", proxyToken: "tok-BBBB2222" });
   await flush();
-  eq(env.authRequired(ours), { authCredentials: { username: "tailtab", password: "tok-BBBB2222" } },
-    "after the reconnect");
+  eq(await challenge.answer, { authCredentials: { username: "tailtab", password: "tok-BBBB2222" } },
+    "the replacement host's token");
 });
 
 // Zen authenticates SOCKS5 in-protocol, which Chromium cannot do at all.
@@ -1147,6 +1229,55 @@ test("picking an exit node asks the host and waits for it", () => {
   eq(ui.sent[ui.sent.length - 1], { cmd: "exitnode", id: "nodeid-server" }, "the command sent");
   // Nothing changes in the popup until the host says it did.
   eq(ui.els.state.textContent, "Connected", "the state line before the host answers");
+});
+
+// Found in live Edge: Chromium keeps an extension's proxy setting across a
+// service-worker restart and an extension reload, but the host process does
+// not survive either. The user ended up with the old host still answering 407
+// on the old port, a new worker holding the token for a new port, and a proxy
+// password dialog. A starting worker owns no live proxy, so whatever setting
+// it finds is from an earlier life and goes.
+test("a PAC left by an earlier worker is dropped at startup", async () => {
+  const env = makeEnv({ levelOfControl: "controlled_by_this_extension" });
+  await flush();
+  eq(env.log.clear, ["regular"], "the leftover setting was cleared before any host answered");
+  eq(env.log.set.length, 0, "nothing was installed in its place yet");
+
+  env.status(RUNNING);
+  await flush();
+  eq(env.log.set, ["PROXY 127.0.0.1:64378"], "the live host's PAC was installed once it was Running");
+  eq(env.log.clear.length, 1, "and the startup sweep did not run again over it");
+});
+
+test("a setting nobody left behind is not touched at startup", async () => {
+  const env = makeEnv(); // controllable_by_this_extension: no PAC of ours installed
+  await flush();
+  eq(env.log.clear, [], "nothing to drop");
+  const policy = makeEnv({ levelOfControl: "controlled_by_policy" });
+  await flush();
+  eq(policy.log.clear, [], "a policy setting is not ours to drop");
+});
+
+// A reconnect is a setTimeout, and a sleeping service worker loses its timers.
+// The alarm is the one thing Chromium promises to wake the worker for.
+test("the heartbeat alarm reconnects a dead host", async () => {
+  const env = makeEnv();
+  await flush();
+  eq(env.log.alarms, [{ name: "tailtab-heartbeat", info: { periodInMinutes: 1 } }], "the alarm is registered at startup");
+  env.status(RUNNING);
+  await flush();
+  const before = env.log.connects;
+  env.disconnect();
+  await flush();
+  env.fireAlarm("tailtab-heartbeat");
+  await flush();
+  eq(env.log.connects, before + 1, "the alarm reconnected");
+  env.fireAlarm("tailtab-heartbeat");
+  await flush();
+  eq(env.log.connects, before + 1, "a live port is left alone");
+  env.fireAlarm("some-other-alarm");
+  await flush();
+  eq(env.log.connects, before + 1, "another extension's alarm name is ignored");
 });
 
 (async () => {
