@@ -51,6 +51,12 @@
     { "host": "2130706433", "proxy": false, "why": "127.0.0.1 as an integer" },
     { "host": "0x7f000001", "proxy": false, "why": "127.0.0.1 as hexadecimal" },
 
+    { "host": "240.0.0.1", "proxy": false, "why": "reserved space" },
+    { "host": "::", "proxy": false, "why": "the unspecified address" },
+    { "host": "ff02::1", "proxy": false, "why": "multicast" },
+    { "host": "[fd7a:115c:a1e0:ab12::1]", "proxy": true, "why": "the tailnet's ULA, bracketed" },
+    { "host": "fec0::1", "proxy": true, "why": "outside fe80::/10; deprecated site-local, not refused" },
+
     { "host": "172.15.0.1", "proxy": true, "why": "just below the private range" },
     { "host": "172.32.0.1", "proxy": true, "why": "just above the private range" },
     { "host": "11.0.0.1", "proxy": true, "why": "just above 10/8" },

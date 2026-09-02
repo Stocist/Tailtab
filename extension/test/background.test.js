@@ -37,7 +37,7 @@ function pacTarget(value) {
 // makeEnv builds a stubbed Chromium and loads background.js into it.
 function makeEnv(options) {
   const opts = options || {};
-  const log = { set: [], clear: [], sent: [], timers: [], connects: 0, localSet: [], sessionSet: [] };
+  const log = { set: [], clear: [], sent: [], sentFull: [], timers: [], connects: 0, localSet: [], sessionSet: [], lastPac: "" };
   const mkEvent = () => {
     const fns = [];
     return { addListener: (f) => fns.push(f), _fire: (...a) => fns.forEach((f) => f(...a)) };
@@ -53,7 +53,7 @@ function makeEnv(options) {
         nativePort = {
           onMessage: mkEvent(),
           onDisconnect: mkEvent(),
-          postMessage: (m) => log.sent.push(m.cmd),
+          postMessage: (m) => { log.sent.push(m.cmd); log.sentFull.push(m); },
           disconnect() {},
         };
         return nativePort;
@@ -68,6 +68,7 @@ function makeEnv(options) {
         get: (_details, cb) => cb({ levelOfControl: log.levelOfControl || opts.levelOfControl || "controllable_by_this_extension" }),
         set: (details, cb) => {
           log.set.push(pacTarget(details.value));
+          log.lastPac = (details.value && details.value.pacScript && details.value.pacScript.data) || "";
           if (!cb) return;
           // Chromium reports a rejected value through runtime.lastError, set
           // only for the duration of the callback.
@@ -173,7 +174,7 @@ function makeEnv(options) {
 // the other half of the proxy layer, and the only place the SOCKS credential
 // is used.
 function makeFirefoxEnv() {
-  const log = { onRequest: null, sent: [], timers: [], sessionSet: [], localSet: [] };
+  const log = { onRequest: null, sent: [], sentFull: [], timers: [], sessionSet: [], localSet: [] };
   const mkEvent = () => {
     const fns = [];
     return { addListener: (f) => fns.push(f), _fire: (...a) => fns.forEach((f) => f(...a)) };
@@ -186,7 +187,7 @@ function makeFirefoxEnv() {
         nativePort = {
           onMessage: mkEvent(),
           onDisconnect: mkEvent(),
-          postMessage: (m) => log.sent.push(m.cmd),
+          postMessage: (m) => { log.sent.push(m.cmd); log.sentFull.push(m); },
           disconnect() {},
         };
         return nativePort;
@@ -485,7 +486,7 @@ test("a popup command reaches the host and the popup is answered", async () => {
 function openPopupUI() {
   const els = {};
   const makeEl = () => {
-    const el = { hidden: false, disabled: false, children: [], listeners: {} };
+    const el = { hidden: false, disabled: false, value: "", children: [], listeners: {} };
     let text = "";
     Object.defineProperty(el, "textContent", {
       get: () => text,
@@ -495,11 +496,12 @@ function openPopupUI() {
     el.addEventListener = (name, fn) => { el.listeners[name] = fn; };
     return el;
   };
-  for (const id of ["state", "hint", "warnings", "details", "tailnet", "hostname", "selfip", "port", "login", "connect", "disconnect", "logout", "warning"]) {
+  for (const id of ["state", "hint", "warnings", "details", "tailnet", "hostname", "selfip", "port", "login", "connect", "disconnect", "logout", "warning", "exitrow", "exitnode"]) {
     els[id] = makeEl();
   }
 
   let backgroundPort = null;
+  const sent = [];
   const sandbox = {
     console: { log() {}, warn() {}, error() {} },
     setTimeout: () => 1,
@@ -515,7 +517,7 @@ function openPopupUI() {
           backgroundPort = {
             listeners: [],
             onMessage: { addListener: (f) => backgroundPort.listeners.push(f) },
-            postMessage: () => {},
+            postMessage: (m) => sent.push(m),
           };
           return backgroundPort;
         },
@@ -533,6 +535,18 @@ function openPopupUI() {
       for (const fn of backgroundPort.listeners) fn(payload);
     },
     warningTexts: () => els.warnings.children.map((c) => c.textContent),
+    // What the popup sent back to the background script.
+    sent: sent,
+    // exitOptions describes the picker as the user would see it.
+    exitOptions: () => els.exitnode.children.map((c) => ({
+      value: c.value, label: c.textContent, disabled: c.disabled,
+    })),
+    // chooseExitNode picks an entry, the way changing the select does.
+    chooseExitNode(id) {
+      els.exitnode.value = id;
+      if (!els.exitnode.listeners.change) throw new Error("the picker has no change listener");
+      els.exitnode.listeners.change({ target: els.exitnode });
+    },
   };
 }
 
@@ -919,6 +933,220 @@ test("the popup does not claim to be routing when the proxy did not take", () =>
   if (ui.els.warning.textContent.indexOf("not routed") === -1) {
     throw new Error("the warning does not say routing is broken: " + ui.els.warning.textContent);
   }
+});
+
+// ------------------------------------------------------------- X3, exit mode
+
+const EXIT_NODES = [
+  { id: "nodeid-attic", name: "attic", online: false, os: "linux" },
+  { id: "nodeid-server", name: "server", online: true, os: "linux" },
+];
+const EXIT_RUNNING = Object.assign({}, RUNNING_AUTH, {
+  exitNodes: EXIT_NODES,
+  exitNode: "nodeid-server",
+  exitNodeActive: true,
+});
+
+test("rules.js matches the shared exit-mode table", () => {
+  const table = JSON.parse(fs.readFileSync(path.resolve(SRC, "..", "testdata", "exit-mode-hosts.json"), "utf8"));
+  const rules = require(path.join(SRC, "rules.js"));
+  if (!table.cases || table.cases.length < 30) {
+    throw new Error("the exit-mode table has shrunk: " + (table.cases || []).length + " cases");
+  }
+  const wrong = [];
+  for (const c of table.cases) {
+    const got = rules.tailtabExitModeProxies(c.host);
+    if (got !== c.proxy) {
+      wrong.push(JSON.stringify(c.host) + ": rules.js says " + got + ", the table says " + c.proxy + " (" + c.why + ")");
+    }
+  }
+  if (wrong.length) throw new Error(wrong.length + " host(s) disagree:\n     " + wrong.join("\n     "));
+});
+
+test("the exit-mode PAC proxies the internet and leaves the LAN alone", () => {
+  const rules = rulesContext();
+  const pac = rules.tailtabBuildPac(64378, "tail4d5e6f.ts.net", true);
+  const decide = new Function("url", "host", pac + "\nreturn FindProxyForURL(url, host);");
+
+  for (const host of ["github.com", "ifconfig.me", "8.8.8.8", "wiki", "server.tail1a2b3c.ts.net"]) {
+    eq(decide("https://" + host + "/", host), "PROXY 127.0.0.1:64378", host);
+  }
+  for (const host of ["localhost", "127.0.0.1", "192.168.1.1", "10.0.0.5", "169.254.1.1", "fe80::1"]) {
+    eq(decide("http://" + host + "/", host), "DIRECT", host);
+  }
+  // Still no fallback: a request that cannot reach the proxy must fail rather
+  // than leave through this machine, which is the whole point of exit mode.
+  if (pac.indexOf("DIRECT\";") === -1) throw new Error("the PAC lost its DIRECT branch entirely");
+  if (pac.indexOf("PROXY 127.0.0.1:64378; DIRECT") !== -1) throw new Error("the PAC offers a DIRECT fallback");
+  for (let i = 0; i < pac.length; i++) {
+    if (pac.charCodeAt(i) > 127) throw new Error("the exit-mode PAC is not ASCII");
+  }
+});
+
+test("choosing an exit node switches the PAC and clearing it switches back", async () => {
+  const env = makeEnv();
+  await flush();
+  env.status(RUNNING_AUTH);
+  await flush();
+
+  const pacRule = () => {
+    const data = env.log.lastPac;
+    return data.indexOf("tailtabExitModeProxies") !== -1 ? "exit" : "tailnet";
+  };
+  eq(pacRule(), "tailnet", "the rule before an exit node is chosen");
+
+  env.status(EXIT_RUNNING);
+  await flush();
+  eq(pacRule(), "exit", "the rule once an exit node is selected");
+  eq(env.log.set.length, 2, "the PAC was rewritten");
+
+  env.status(Object.assign({}, EXIT_RUNNING, { exitNode: "", exitNodeActive: false }));
+  await flush();
+  eq(pacRule(), "tailnet", "the rule after clearing the exit node");
+});
+
+// G15. An exit node that goes offline must not send this profile's browsing
+// back out over the local connection: the browser keeps sending everything to
+// the proxy, and the host refuses it, so browsing stops instead of leaking.
+test("an exit node going offline keeps the browser in exit mode", async () => {
+  const env = makeEnv();
+  await flush();
+  env.status(EXIT_RUNNING);
+  await flush();
+  const before = env.log.set.length;
+
+  env.status(Object.assign({}, EXIT_RUNNING, { exitNodeActive: false }));
+  await flush();
+  // The routing decision, not the last script installed: if this flipped, the
+  // next PAC written would send everything DIRECT again.
+  eq(vm.runInContext("exitMode()", env.ctx), true, "still in exit mode with the node offline");
+  eq(env.log.lastPac.indexOf("tailtabExitModeProxies") !== -1, true, "the installed PAC is still the exit-mode one");
+  eq(env.log.set.length, before, "the PAC was needlessly rewritten");
+
+  // And a PAC written while the node is offline still routes everything to the
+  // proxy, where the host refuses it. Blocked, not leaked.
+  env.status(Object.assign({}, EXIT_RUNNING, { exitNodeActive: false, proxyPort: 9999 }));
+  await flush();
+  if (env.log.lastPac.indexOf("tailtabExitModeProxies") === -1) {
+    throw new Error("the browser fell back to the split tunnel while an exit node was still selected");
+  }
+});
+
+// The same on the Firefox side, where there is no PAC to inspect: the listener
+// answers per request, so the decision is visible directly.
+test("Firefox keeps sending everything to the proxy when the exit node is offline", async () => {
+  const env = makeFirefoxEnv();
+  await flush();
+  env.status(Object.assign({}, EXIT_RUNNING, { exitNodeActive: false }));
+  await flush();
+  const via = { type: "socks", host: "127.0.0.1", port: 64378, proxyDNS: true, username: "tailtab", password: TOKEN };
+  eq(env.resolve("https://github.com/"), via, "the public internet with the exit node offline");
+  eq(env.resolve("http://192.168.1.1/"), { type: "direct" }, "the LAN is still direct");
+});
+
+test("a host restart re-derives exit mode from the new status", async () => {
+  const env = makeEnv();
+  await flush();
+  env.status(Object.assign({}, EXIT_RUNNING, { proxyPort: 1111 }));
+  await flush();
+  if (env.log.lastPac.indexOf("tailtabExitModeProxies") === -1) throw new Error("not in exit mode to begin with");
+
+  env.disconnect();
+  await flush();
+  eq(env.log.clear, ["regular"], "the PAC is handed back when the host dies");
+
+  env.runNextTimer(); // the reconnect
+  // The replacement host reports the same selection, on a new port.
+  env.status(Object.assign({}, EXIT_RUNNING, { proxyPort: 2222, proxyToken: "tok-BBBB2222" }));
+  await flush();
+  eq(env.log.set, ["PROXY 127.0.0.1:1111", "PROXY 127.0.0.1:2222"], "the PAC follows the new port");
+  if (env.log.lastPac.indexOf("tailtabExitModeProxies") === -1) {
+    throw new Error("exit mode was lost across the host restart");
+  }
+});
+
+test("Firefox routes through the exit node too", async () => {
+  const env = makeFirefoxEnv();
+  await flush();
+  env.status(EXIT_RUNNING);
+  await flush();
+
+  const via = { type: "socks", host: "127.0.0.1", port: 64378, proxyDNS: true, username: "tailtab", password: TOKEN };
+  eq(env.resolve("https://github.com/"), via, "the public internet in exit mode");
+  eq(env.resolve("http://wiki/"), via, "a tailnet host in exit mode");
+  eq(env.resolve("http://192.168.1.1/"), { type: "direct" }, "the LAN in exit mode");
+  eq(env.resolve("http://127.0.0.1:9000/"), { type: "direct" }, "loopback in exit mode");
+
+  // Cleared again: back to the split tunnel.
+  env.status(Object.assign({}, EXIT_RUNNING, { exitNode: "", exitNodeActive: false }));
+  await flush();
+  eq(env.resolve("https://github.com/"), { type: "direct" }, "the public internet with no exit node");
+});
+
+test("the exit-node command carries the id to the host", async () => {
+  const env = makeEnv();
+  await flush();
+  env.status(EXIT_RUNNING);
+  await flush();
+  const port = env.openPopup();
+  port.onMessage._fire({ cmd: "exitnode", id: "nodeid-attic" });
+  eq(env.log.sentFull[env.log.sentFull.length - 1], { cmd: "exitnode", id: "nodeid-attic" }, "the message sent");
+  port.onMessage._fire({ cmd: "exitnode" });
+  eq(env.log.sentFull[env.log.sentFull.length - 1], { cmd: "exitnode", id: "" }, "clearing the selection");
+});
+
+// ---------------------------------------------------------- the popup picker
+
+test("the popup lists the exit nodes and says which one carries the traffic", () => {
+  const ui = openPopupUI();
+  ui.push({
+    connected: true,
+    status: Object.assign({ warnings: [] }, EXIT_RUNNING, { state: "Running" }),
+  });
+  eq(ui.els.state.textContent, "Connected via server", "state line");
+  eq(ui.els.exitrow.hidden, false, "the picker is shown");
+  eq(ui.exitOptions(), [
+    { value: "", label: "None", disabled: false },
+    { value: "nodeid-attic", label: "attic (offline)", disabled: true },
+    { value: "nodeid-server", label: "server", disabled: false },
+  ], "the options");
+  eq(ui.els.exitnode.value, "nodeid-server", "the selection shown");
+});
+
+test("the popup says browsing is blocked when the exit node is offline", () => {
+  const ui = openPopupUI();
+  ui.push({
+    connected: true,
+    status: Object.assign({ warnings: [] }, EXIT_RUNNING, { state: "Running", exitNodeActive: false }),
+  });
+  if (ui.els.state.textContent.indexOf("blocked") === -1) {
+    throw new Error("the popup does not say browsing is blocked: " + ui.els.state.textContent);
+  }
+  if (ui.els.state.textContent.indexOf("server") !== -1 && ui.els.state.textContent.indexOf("via") !== -1) {
+    throw new Error("the popup claims traffic is going via the exit node");
+  }
+});
+
+test("no exit nodes means no picker", () => {
+  const ui = openPopupUI();
+  ui.push({
+    connected: true,
+    status: { state: "Running", tailnet: "tail4d5e6f.ts.net", proxyPort: 64378, warnings: [], exitNodes: [] },
+  });
+  eq(ui.els.exitrow.hidden, true, "the picker is hidden on a tailnet with no exit node");
+  eq(ui.els.state.textContent, "Connected", "state line");
+});
+
+test("picking an exit node asks the host and waits for it", () => {
+  const ui = openPopupUI();
+  ui.push({
+    connected: true,
+    status: Object.assign({ warnings: [] }, EXIT_RUNNING, { state: "Running", exitNode: "", exitNodeActive: false }),
+  });
+  ui.chooseExitNode("nodeid-server");
+  eq(ui.sent[ui.sent.length - 1], { cmd: "exitnode", id: "nodeid-server" }, "the command sent");
+  // Nothing changes in the popup until the host says it did.
+  eq(ui.els.state.textContent, "Connected", "the state line before the host answers");
 });
 
 (async () => {

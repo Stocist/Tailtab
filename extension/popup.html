@@ -95,6 +95,23 @@
         color: var(--accent);
         font-weight: 600;
       }
+      #exitrow {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-top: 10px;
+      }
+      #exitrow label {
+        color: var(--muted);
+      }
+      #exitnode {
+        flex: 1 1 auto;
+        min-width: 0;
+        padding: 4px 6px;
+        border-radius: 6px;
+        border: 1px solid var(--line);
+      }
       .warn {
         margin-top: 10px;
         padding: 7px 9px;
@@ -120,6 +137,11 @@
       <dt>Proxy</dt>
       <dd id="port"></dd>
     </dl>
+
+    <div id="exitrow" hidden>
+      <label for="exitnode">Exit node</label>
+      <select id="exitnode"></select>
+    </div>
 
     <div class="actions">
       <button id="login" class="primary" hidden>Log in</button>

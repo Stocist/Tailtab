@@ -77,6 +77,66 @@ function tailtabIsTailnetHost(host, tailnetDomain) {
   return false;
 }
 
+// tailtabExitModeProxies reports whether host goes through the proxy while an
+// exit node is carrying this profile's traffic.
+//
+// Exit mode inverts the split tunnel: the point of an exit node is that
+// everything leaves through it, so the public internet is proxied and only what
+// belongs to a local network is left alone. The addresses refused here are the
+// ones that would otherwise be dialled on the exit node's LAN rather than the
+// user's own, plus loopback, which is this machine.
+//
+// The host applies the same rule in Go (internal/proxy, allowExitHost), and the
+// two are held together by testdata/exit-mode-hosts.json.
+//
+// Like tailtabIsTailnetHost, this must stay self-contained and pure ASCII: its
+// source is stringified into a PAC script.
+function tailtabExitModeProxies(host) {
+  if (!host) return false;
+  var h = String(host).toLowerCase();
+  if (h.charAt(h.length - 1) === ".") h = h.slice(0, -1);
+  if (h.charAt(0) === "[" && h.charAt(h.length - 1) === "]") h = h.slice(1, -1);
+  if (h === "") return false;
+
+  var mapped = h.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (mapped) h = mapped[1];
+
+  if (h === "localhost") return false;
+  if (h.length > 10 && h.slice(-10) === ".localhost") return false;
+
+  var v4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    var a = parseInt(v4[1], 10);
+    var b = parseInt(v4[2], 10);
+    if (a === 100 && b >= 64 && b <= 127) return true; // the tailnet itself
+    if (a === 0 || a === 10 || a === 127) return false; // this host, private, loopback
+    if (a === 172 && b >= 16 && b <= 31) return false; // 172.16/12
+    if (a === 192 && b === 168) return false; // 192.168/16
+    if (a === 169 && b === 254) return false; // link-local
+    if (a >= 224) return false; // multicast, reserved, broadcast
+    return true;
+  }
+
+  if (h.indexOf(":") !== -1) {
+    if (h.indexOf("fd7a:115c:a1e0") === 0) return true; // the tailnet's ULA
+    if (h === "::1" || h === "::") return false;
+    // fe80::/10 is fe80 through febf; fc00::/7 is every fc and fd; ff00::/8 is
+    // multicast.
+    if (h.indexOf("fe8") === 0 || h.indexOf("fe9") === 0) return false;
+    if (h.indexOf("fea") === 0 || h.indexOf("feb") === 0) return false;
+    if (h.indexOf("fc") === 0 || h.indexOf("fd") === 0) return false;
+    if (h.indexOf("ff") === 0) return false;
+    return true;
+  }
+
+  // A bare number is an obfuscated IPv4 address, never a name.
+  if (/^\d+$/.test(h) || /^0x[0-9a-f]+$/.test(h)) return false;
+
+  // Everything else is a name: a MagicDNS short name, or a public one, and in
+  // exit mode both go to the proxy.
+  return true;
+}
+
 // tailtabBuildPac returns a PAC script for Chromium that applies exactly the
 // rules above, sending tailnet hosts to the loopback proxy and everything else
 // DIRECT.
@@ -90,15 +150,29 @@ function tailtabIsTailnetHost(host, tailnetDomain) {
 //
 // There is deliberately no "; DIRECT" fallback: a tailnet request that cannot
 // authenticate must fail, not quietly go out over the public internet.
-function tailtabBuildPac(port, tailnetDomain) {
-  var pac =
-    tailtabIsTailnetHost.toString() +
-    "\nfunction FindProxyForURL(url, host) {\n" +
-    "  return tailtabIsTailnetHost(host, " +
-    JSON.stringify(tailnetDomain || "") +
-    ") ? " +
-    JSON.stringify("PROXY 127.0.0.1:" + port) +
-    " : \"DIRECT\";\n}\n";
+function tailtabBuildPac(port, tailnetDomain, exitMode) {
+  var target = JSON.stringify("PROXY 127.0.0.1:" + port);
+  var pac;
+  if (exitMode) {
+    // An exit node is selected, so everything that is not local goes through
+    // it. The browser and the host switch on the same status field, or one
+    // sends traffic the other refuses.
+    pac =
+      tailtabExitModeProxies.toString() +
+      "\nfunction FindProxyForURL(url, host) {\n" +
+      "  return tailtabExitModeProxies(host) ? " +
+      target +
+      " : \"DIRECT\";\n}\n";
+  } else {
+    pac =
+      tailtabIsTailnetHost.toString() +
+      "\nfunction FindProxyForURL(url, host) {\n" +
+      "  return tailtabIsTailnetHost(host, " +
+      JSON.stringify(tailnetDomain || "") +
+      ") ? " +
+      target +
+      " : \"DIRECT\";\n}\n";
+  }
 
   // Chromium refuses a PAC script containing any byte outside ASCII:
   // "'pacScript.data' supports only ASCII code (encode URLs in Punycode
@@ -118,5 +192,9 @@ function tailtabBuildPac(port, tailnetDomain) {
 
 // Export for the popup and for tests; the background scripts use the globals.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { tailtabIsTailnetHost: tailtabIsTailnetHost, tailtabBuildPac: tailtabBuildPac };
+  module.exports = {
+    tailtabIsTailnetHost: tailtabIsTailnetHost,
+    tailtabExitModeProxies: tailtabExitModeProxies,
+    tailtabBuildPac: tailtabBuildPac,
+  };
 }

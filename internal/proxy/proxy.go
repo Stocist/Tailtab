@@ -79,7 +79,11 @@ var privateRanges = []netip.Prefix{
 	netip.MustParsePrefix("172.16.0.0/12"),
 	netip.MustParsePrefix("192.168.0.0/16"),
 	netip.MustParsePrefix("224.0.0.0/4"),
-	netip.MustParsePrefix("255.255.255.255/32"),
+	// 240/4 is reserved and never routable, and the browser's rule refuses it
+	// with the same one-line test as multicast; keeping them together is what
+	// holds the two implementations in step.
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("::/128"),
 	netip.MustParsePrefix("::1/128"),
 	netip.MustParsePrefix("fc00::/7"),
 	netip.MustParsePrefix("fe80::/10"),

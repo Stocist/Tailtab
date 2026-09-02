@@ -35,6 +35,47 @@ const HINTS = {
 port.onMessage.addListener(render);
 port.postMessage({ cmd: "status" });
 
+// runningStateLine says what "Running" actually means right now.
+function runningStateLine(msg, st) {
+  if (msg.proxyProblem) return "Connected, not routing";
+  if (st.exitNode) {
+    if (!st.exitNodeActive) return "Connected, exit node offline — browsing blocked";
+    const chosen = (st.exitNodes || []).find((n) => n.id === st.exitNode);
+    return "Connected via " + ((chosen && chosen.name) || "exit node");
+  }
+  return "Connected";
+}
+
+// renderExitNodes fills the picker from the status and nothing else: the
+// selection shown is always the one the host reported, never what was clicked,
+// so a refused or slow change cannot leave the popup claiming something untrue.
+function renderExitNodes(msg, st, running) {
+  const row = el("exitrow");
+  const select = el("exitnode");
+  const nodes = Array.isArray(st.exitNodes) ? st.exitNodes : [];
+  // Most tailnets have no exit node at all, and an empty picker is just noise.
+  row.hidden = !running || nodes.length === 0;
+  if (row.hidden) return;
+
+  select.textContent = "";
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "None";
+  select.appendChild(none);
+  for (const node of nodes) {
+    const option = document.createElement("option");
+    option.value = node.id;
+    option.textContent = node.online ? node.name : node.name + " (offline)";
+    // An offline node stays listed, because it is a real choice the user made
+    // or may want back, but it cannot be newly picked while it cannot carry
+    // traffic.
+    option.disabled = !node.online && node.id !== st.exitNode;
+    select.appendChild(option);
+  }
+  select.value = st.exitNode || "";
+  select.disabled = !msg.connected;
+}
+
 function render(msg) {
   latest = msg;
   const st = msg.status || {};
@@ -55,7 +96,7 @@ function render(msg) {
   // "Connected" means the node is up AND the browser is pointed at it. If the
   // proxy configuration did not take, saying Connected alone would be a lie:
   // tailnet names are going out over the public internet.
-  el("state").textContent = running ? (msg.proxyProblem ? "Connected, not routing" : "Connected") : state;
+  el("state").textContent = running ? runningStateLine(msg, st) : state;
   el("hint").textContent = awaitingLogin
     ? "Requesting login link…"
     : errorLine || HINTS[state] || "";
@@ -87,6 +128,8 @@ function render(msg) {
   el("connect").textContent = awaitingLogin ? "Requesting…" : "Connect";
   el("disconnect").hidden = !running;
   el("logout").hidden = !msg.connected || (!running && state !== "Stopped");
+
+  renderExitNodes(msg, st, running);
 
   const warning = el("warning");
   if (msg.proxyProblem) {
@@ -122,6 +165,13 @@ el("connect").addEventListener("click", () => {
   port.postMessage({ cmd: "up" });
 });
 el("disconnect").addEventListener("click", () => port.postMessage({ cmd: "down" }));
+
+// Choosing an exit node routes this whole browser profile through it. Nothing
+// is rendered from this event: the picker moves only when the host reports the
+// new selection back.
+el("exitnode").addEventListener("change", (e) => {
+  port.postMessage({ cmd: "exitnode", id: e.target.value || "" });
+});
 
 // Two-step confirmation: a dialog from a popup is unreliable across browsers,
 // and logging out discards the node's credentials.

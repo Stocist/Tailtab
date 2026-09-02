@@ -27,7 +27,17 @@ const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 
 // The last status event from the host, and the only thing the UI renders.
-let status = { state: "Disconnected", error: "", proxyPort: 0, tailnet: "", warnings: [] };
+let status = { state: "Disconnected", error: "", proxyPort: 0, tailnet: "", warnings: [], exitNode: "", exitNodes: [], exitNodeActive: false };
+
+// exitMode reports whether the browser should send everything through the
+// proxy. It keys off the exit node being SELECTED, not on it being active: if
+// the node goes offline, the host refuses public destinations and browsing
+// stops, which is the honest failure. Falling back to the split tunnel would
+// quietly put this profile's traffic back on the local network instead, which
+// is exactly what choosing an exit node was meant to prevent (G15).
+function exitMode() {
+  return !!status.exitNode;
+}
 // Why the proxy could not be configured, if it could not be.
 let proxyProblem = "";
 // The proxy credential from the host. This is a secret, and it is deliberately
@@ -62,7 +72,10 @@ if (USE_ON_REQUEST) {
       } catch (e) {
         return { type: "direct" };
       }
-      if (!tailtabIsTailnetHost(host, status.tailnet)) return { type: "direct" };
+      const proxied = exitMode()
+        ? tailtabExitModeProxies(host)
+        : tailtabIsTailnetHost(host, status.tailnet);
+      if (!proxied) return { type: "direct" };
       // proxyDNS keeps MagicDNS names unresolved until they reach the node.
       // Firefox can authenticate SOCKS5 in-protocol, so the credential rides
       // along here. With no token yet the request still goes to the proxy and
@@ -132,7 +145,7 @@ async function applyProxy() {
   // to say so in the popup than to install nothing and report Connected.
   let pac;
   try {
-    pac = tailtabBuildPac(port, status.tailnet);
+    pac = tailtabBuildPac(port, status.tailnet, exitMode());
   } catch (e) {
     proxyProblem = "tailtab could not build a proxy script, so tailnet traffic is not routed: " + e.message;
     pushToPopups();
@@ -211,6 +224,11 @@ function connect() {
       proxyPort: 0,
       tailnet: status.tailnet,
       warnings: [],
+      // The selection is kept so the popup can still say what it was, but with
+      // no proxy port nothing is routed anywhere until the host is back.
+      exitNodes: status.exitNodes,
+      exitNode: status.exitNode,
+      exitNodeActive: false,
     });
     scheduleReconnect(why);
   });
@@ -234,13 +252,13 @@ function sendInit() {
   nativePort.postMessage({ cmd: "init", profileID: profileID, browser: BROWSER });
 }
 
-function send(cmd) {
+function send(cmd, extra) {
   if (!nativePort) {
     connect();
     return false;
   }
   try {
-    nativePort.postMessage({ cmd: cmd });
+    nativePort.postMessage(Object.assign({ cmd: cmd }, extra || null));
     return true;
   } catch (e) {
     console.error("tailtab: sending " + cmd + " failed:", e);
@@ -275,6 +293,12 @@ function onHostMessage(msg) {
     selfIP: msg.selfIP || "",
     proxyPort: msg.proxyPort || 0,
     error: msg.error || "",
+    // The exit node this profile routes through, if any. exitNode is the
+    // selection and exitNodeActive is whether it is really carrying traffic;
+    // the pair is what the popup explains and what the routing rules use.
+    exitNodes: Array.isArray(msg.exitNodes) ? msg.exitNodes : [],
+    exitNode: msg.exitNode || "",
+    exitNodeActive: !!msg.exitNodeActive,
     // Why the node is unhealthy — a blocked control plane, for instance.
     warnings: Array.isArray(msg.warnings) ? msg.warnings : [],
   });
@@ -298,7 +322,14 @@ function setStatus(next) {
   if (isRunning) {
     // The PAC embeds the port and the tailnet suffix, so it is also rewritten
     // whenever either of those changes underneath a live connection.
-    if (!wasRunning || next.proxyPort !== previous.proxyPort || next.tailnet !== previous.tailnet) {
+    // The exit node is in this list because it decides which rule the PAC
+    // carries: choosing or clearing one rewrites the whole script.
+    if (
+      !wasRunning ||
+      next.proxyPort !== previous.proxyPort ||
+      next.tailnet !== previous.tailnet ||
+      next.exitNode !== previous.exitNode
+    ) {
       applyProxy();
     }
   } else if (wasRunning) {
@@ -326,6 +357,11 @@ api.runtime.onConnect.addListener((port) => {
         break;
       case "logout":
         send("logout");
+        break;
+      case "exitnode":
+        // The host validates the id against the offers it knows; the popup
+        // only ever passes on what the user picked.
+        send("exitnode", { id: typeof msg.id === "string" ? msg.id : "" });
         break;
       case "status":
         send("status");
