@@ -45,24 +45,27 @@
 
       /* header: account switcher + toggle */
       .hdr { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); position: relative; }
-      #avatar { width: 28px; height: 28px; border-radius: 50%; flex: none; background: linear-gradient(135deg, #8ab4ff, #2f6fed); color: #fff; font-weight: 600; font-size: 12px; display: flex; align-items: center; justify-content: center; }
-      #account { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
-      #account .who { min-width: 0; }
-      #accountname { display: block; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      #accounttailnet { display: block; color: var(--muted); font-size: 12px; font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      #account .chev { color: var(--muted); font-size: 11px; flex: none; }
+      #avatar { width: 32px; height: 32px; border-radius: 50%; flex: none; background: linear-gradient(135deg, #34d399 0%, #3b82f6 55%, #6366f1 100%); color: #fff; font-weight: 600; font-size: 13px; display: flex; align-items: center; justify-content: center; }
+      /* The account control reads as a select: boxed, full width, chevron at
+         the right edge, sized for a finger rather than a caret. */
+      #account { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); }
+      #account:hover { border-color: var(--muted); }
+      #account .who { min-width: 0; flex: 1; }
+      #accountname { display: block; font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #accounttailnet { display: block; color: var(--muted); font-size: 11.5px; font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #account .chev { color: var(--muted); font-size: 13px; flex: none; }
       #toggle { width: 38px; height: 22px; border-radius: 11px; background: var(--muted); position: relative; flex: none; transition: background 0.15s; }
       #toggle.on { background: var(--ok); }
       #toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: left 0.15s; }
       #toggle.on::after { left: 18px; }
-      #accountmenu { position: absolute; left: 10px; right: 10px; top: 50px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2); padding: 6px; z-index: 2; }
-      #accountmenu .item { display: flex; align-items: center; gap: 10px; padding: 7px 9px; border-radius: 7px; width: 100%; }
+      #accountmenu { position: absolute; left: 56px; right: 14px; top: 58px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.25); padding: 6px; z-index: 2; }
+      #accountmenu .item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px; width: 100%; font-size: 14px; }
       #accountmenu .item.on { background: color-mix(in srgb, var(--accent) 12%, transparent); }
       #accountmenu .item:hover { background: var(--panel); }
       #accountmenu .item b { display: block; font-weight: 600; }
-      #accountmenu .item .tn { display: block; font-size: 11.5px; color: var(--muted); font-family: var(--mono); }
+      #accountmenu .item .tn { display: block; font-size: 12px; color: var(--muted); font-family: var(--mono); margin-top: 1px; }
       #accountmenu .div { height: 1px; background: var(--line); margin: 6px 4px; }
-      #accountmenu .add { color: var(--accent); padding: 7px 9px; width: 100%; }
+      #accountmenu .add { color: var(--accent); padding: 10px 12px; width: 100%; font-size: 14px; }
 
       /* state pill */
       .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; font-size: 12px; font-weight: 500; max-width: 100%; }
@@ -86,17 +89,17 @@
       select { font: inherit; font-size: 13px; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; max-width: 60%; }
 
       /* machines */
-      #search { width: 100%; font: inherit; font-size: 13px; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; }
+      #search { width: 100%; font: inherit; font-size: 14px; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; }
       #search::placeholder { color: var(--muted); }
       #machines { list-style: none; margin: 6px 0 0; padding: 0; }
-      #machines li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 4px 0; }
+      #machines li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 5px 0; font-size: 14px; }
       #machines .name { display: flex; align-items: center; gap: 7px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       #machines .name::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); flex: none; }
       #machines .name.off::before { background: var(--muted); }
       #machines .more { color: var(--muted); font-size: 12px; }
 
       /* footer */
-      .foot { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; color: var(--muted); font-size: 12px; font-family: var(--mono); }
+      .foot { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; color: var(--muted); font-size: 11.5px; font-family: var(--mono); opacity: 0.8; }
       .foot button { color: var(--muted); font-family: inherit; }
       #warning { margin: 10px 14px 0; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--warn) 12%, transparent); color: var(--warn); font-size: 12.5px; }
       #warning.bad { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad); }
@@ -105,7 +108,7 @@
   </head>
   <body>
     <div class="hdr">
-      <div id="avatar">t</div>
+      <div id="avatar" title="tailtab">t</div>
       <button id="account" aria-haspopup="menu">
         <span class="who">
           <span id="accountname">tailtab</span>
@@ -139,7 +142,7 @@
     </div>
 
     <div class="sec" id="machinesec" hidden>
-      <input id="search" type="search" placeholder="Find a machine…" autocomplete="off" />
+      <input id="search" type="search" placeholder="Machines" autocomplete="off" />
       <ul id="machines"></ul>
     </div>
 

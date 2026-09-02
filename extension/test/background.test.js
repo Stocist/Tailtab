@@ -1402,7 +1402,7 @@ test("the machine search filters peers and offers their addresses", () => {
       ] },
   });
   eq(ui.els.machinesec.hidden, false, "the search box is shown when there are peers");
-  eq(ui.machineRows(), [], "nothing listed until something is typed");
+  eq(ui.machineRows().map((r) => r.name), ["server", "relay", "pc"], "the first few are listed up front, online first");
   ui.search("ser");
   eq(ui.machineRows().map((r) => r.name + " " + r.ip), ["server 100.80.1.7"], "a name match");
   ui.search("100.66");
@@ -1422,6 +1422,17 @@ test("the toggle disconnects a running node and connects a stopped one", () => {
   eq(ui.els.toggle.className, "", "toggle off while Stopped");
   ui.clickToggle();
   eq(ui.sent[ui.sent.length - 1], { cmd: "up" }, "up");
+});
+
+test("more machines than the preview shows are counted, not listed", () => {
+  const ui = openPopupUI();
+  const peers = [];
+  for (let i = 0; i < 21; i++) peers.push({ name: "m" + i, dnsName: "m" + i + ".t.ts.net", ip: "100.64.0." + i, online: i % 2 === 0 });
+  ui.push({ connected: true, status: { state: "Running", tailnet: "t.ts.net", proxyPort: 1, warnings: [], accounts: [], peers: peers } });
+  const rows = ui.machineRows();
+  eq(rows.length, 4, "three machines and the count line");
+  eq(rows[3].name, "18 more · type to filter", "the count line");
+  eq(rows.slice(0, 3).every((r) => r.className === "name"), true, "online machines come first");
 });
 (async () => {
   let failed = 0;

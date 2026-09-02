@@ -25,6 +25,8 @@ let awaitingLogin = false;
 let switchingTo = "";
 let menuOpen = false;
 const MAX_MACHINES = 8;
+// How many machines to show before anything is typed.
+const PREVIEW_MACHINES = 3;
 
 // A state the node reports that is worth explaining.
 const HINTS = {
@@ -185,9 +187,9 @@ function renderExitNodes(msg, st, running) {
   select.disabled = !msg.connected;
 }
 
-// renderMachines shows the peers matching the search box. With nothing typed
-// the list stays empty: the box is there to answer "what is X's address",
-// not to be a directory.
+// renderMachines lists the tailnet's machines. With nothing typed it shows the
+// first few, online ones first, and says how many more there are; typing
+// filters by name, DNS name or address.
 function renderMachines(st, running) {
   const sec = el("machinesec");
   const peers = Array.isArray(st.peers) ? st.peers : [];
@@ -196,14 +198,20 @@ function renderMachines(st, running) {
   list.textContent = "";
   if (sec.hidden) return;
   const q = String(el("search").value || "").trim().toLowerCase();
-  if (!q) return;
-  const hits = peers.filter(
-    (p) =>
-      (p.name || "").toLowerCase().includes(q) ||
-      (p.dnsName || "").toLowerCase().includes(q) ||
-      (p.ip || "").includes(q)
-  );
-  for (const peer of hits.slice(0, MAX_MACHINES)) {
+  let hits;
+  let limit = MAX_MACHINES;
+  if (q) {
+    hits = peers.filter(
+      (p) =>
+        (p.name || "").toLowerCase().includes(q) ||
+        (p.dnsName || "").toLowerCase().includes(q) ||
+        (p.ip || "").includes(q)
+    );
+  } else {
+    hits = peers.slice().sort((a, b) => (b.online ? 1 : 0) - (a.online ? 1 : 0));
+    limit = PREVIEW_MACHINES;
+  }
+  for (const peer of hits.slice(0, limit)) {
     const li = document.createElement("li");
     const name = document.createElement("button");
     name.className = "name" + (peer.online ? "" : " off");
@@ -219,10 +227,10 @@ function renderMachines(st, running) {
     li.appendChild(ip);
     list.appendChild(li);
   }
-  if (hits.length > MAX_MACHINES) {
+  if (hits.length > limit) {
     const more = document.createElement("li");
     more.className = "more";
-    more.textContent = hits.length - MAX_MACHINES + " more — keep typing";
+    more.textContent = hits.length - limit + " more · type to filter";
     list.appendChild(more);
   }
   if (hits.length === 0) {
@@ -332,7 +340,7 @@ function render(msg) {
     setText("hostname", st.hostname || "unknown");
     setText("selfip", st.selfIP || "unknown");
   }
-  setText("port", st.proxyPort ? "proxy 127.0.0.1:" + st.proxyPort : "");
+  setText("port", st.proxyPort ? "local proxy 127.0.0.1:" + st.proxyPort : "");
 
   // A login URL is always offered when there is one, warnings or not.
   el("login").hidden = !st.authURL;
