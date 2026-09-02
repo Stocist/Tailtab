@@ -45,10 +45,10 @@ func ValidGeckoID(id string) bool {
 // fields are mutually exclusive: Chromium reads AllowedOrigins, Gecko reads
 // AllowedExtensions.
 type manifest struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Path        string   `json:"path"`
-	Type        string   `json:"type"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Path        string `json:"path"`
+	Type        string `json:"type"`
 	// AllowedOrigins entries must carry a trailing slash or Chromium rejects them.
 	AllowedOrigins    []string `json:"allowed_origins,omitempty"`
 	AllowedExtensions []string `json:"allowed_extensions,omitempty"`

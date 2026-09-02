@@ -70,12 +70,12 @@ func TestTargetsRejectsBadInput(t *testing.T) {
 		t.Fatalf("valid options rejected: %v", err)
 	}
 	for name, mutate := range map[string]func(*Options){
-		"no home":            func(o *Options) { o.Home = "" },
-		"relative exe":       func(o *Options) { o.ExePath = "bin/tailtab" },
-		"bad chromium id":    func(o *Options) { o.EdgeID = "not-an-id" },
-		"bad gecko id":       func(o *Options) { o.GeckoID = "tailtab" },
-		"empty chromium id":  func(o *Options) { o.EdgeID = "" },
-		"empty gecko id":     func(o *Options) { o.GeckoID = "" },
+		"no home":           func(o *Options) { o.Home = "" },
+		"relative exe":      func(o *Options) { o.ExePath = "bin/tailtab" },
+		"bad chromium id":   func(o *Options) { o.EdgeID = "not-an-id" },
+		"bad gecko id":      func(o *Options) { o.GeckoID = "tailtab" },
+		"empty chromium id": func(o *Options) { o.EdgeID = "" },
+		"empty gecko id":    func(o *Options) { o.GeckoID = "" },
 	} {
 		opts := base
 		mutate(&opts)
