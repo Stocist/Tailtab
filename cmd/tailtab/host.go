@@ -27,7 +27,7 @@ func (b *nodeBackend) Init(profileID, browser string) error {
 	}
 	// The proxy comes up with the node, before login, so the extension can wire
 	// the browser to a stable port once. Requests fail until the node runs.
-	p, err := proxy.Start(b.node.TSNet())
+	p, err := proxy.Start(b.node.TSNet(), b.h.token())
 	if err != nil {
 		return err
 	}
@@ -95,14 +95,34 @@ type host struct {
 	initOK    bool  // that init succeeded, so the node exists
 	fatal     error // set when the host cannot go on, e.g. the node would not start
 	proxyPort int
+	// proxyToken authenticates the extension to the loopback proxy. It is a
+	// secret: it goes out in status events and nowhere else, and in
+	// particular never into a log line (G10).
+	proxyToken string
+}
+
+// token returns the proxy credential this process was started with.
+func (h *host) token() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.proxyToken
 }
 
 // runHost runs the native-messaging loop until stdin closes, then exits.
 func runHost() {
-	h := &host{codec: nm.NewCodec(os.Stdin, os.Stdout)}
+	// One credential per process, generated before anything can listen. The
+	// extension receives it in every status event; no other local process ever
+	// sees it, which is what stops them borrowing this profile's tailnet
+	// identity through the loopback port.
+	token, err := proxy.NewToken()
+	if err != nil {
+		log.Printf("%v", err)
+		os.Exit(1)
+	}
+	h := &host{codec: nm.NewCodec(os.Stdin, os.Stdout), proxyToken: token}
 	h.be = &nodeBackend{h: h, node: node.New(func(node.Status) { h.pushStatus() })}
 
-	err := h.loop()
+	err = h.loop()
 	h.close()
 	if err != nil && !errors.Is(err, io.EOF) {
 		log.Printf("message loop ended: %v", err)
@@ -248,6 +268,7 @@ func (h *host) sendStatus() {
 	}
 	h.mu.Lock()
 	ev.ProxyPort = h.proxyPort
+	ev.ProxyToken = h.proxyToken
 	h.mu.Unlock()
 	if err := h.codec.Write(ev); err != nil {
 		log.Printf("writing status event: %v", err)

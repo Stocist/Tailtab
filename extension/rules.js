@@ -67,8 +67,18 @@ function tailtabIsTailnetHost(host, tailnetDomain) {
 }
 
 // tailtabBuildPac returns a PAC script for Chromium that applies exactly the
-// rules above, sending tailnet hosts to the loopback SOCKS5 proxy and
-// everything else DIRECT.
+// rules above, sending tailnet hosts to the loopback proxy and everything else
+// DIRECT.
+//
+// PROXY, not SOCKS5: the listener requires a credential, and Chromium has never
+// implemented SOCKS5 authentication (research/browser.md §1.3). Over PROXY the
+// browser speaks HTTP to the listener — CONNECT for https, a forwarded request
+// for http — so the 407 challenge reaches webRequest.onAuthRequired and the
+// token can be supplied. Hostnames still travel unresolved, in the CONNECT
+// line, which is what keeps MagicDNS resolution inside the node.
+//
+// There is deliberately no "; DIRECT" fallback: a tailnet request that cannot
+// authenticate must fail, not quietly go out over the public internet.
 function tailtabBuildPac(port, tailnetDomain) {
   return (
     tailtabIsTailnetHost.toString() +
@@ -76,7 +86,7 @@ function tailtabBuildPac(port, tailnetDomain) {
     "  return tailtabIsTailnetHost(host, " +
     JSON.stringify(tailnetDomain || "") +
     ") ? " +
-    JSON.stringify("SOCKS5 127.0.0.1:" + port) +
+    JSON.stringify("PROXY 127.0.0.1:" + port) +
     " : \"DIRECT\";\n}\n"
   );
 }

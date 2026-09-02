@@ -25,19 +25,19 @@ const read = (f) => fs.readFileSync(path.join(SRC, f), "utf8");
 const flush = () => new Promise((r) => setImmediate(() => setImmediate(() => setImmediate(r))));
 
 // pacTarget pulls the proxy a PAC script would return, so tests can assert on
-// "SOCKS5 127.0.0.1:64378" rather than on generated JavaScript.
+// "PROXY 127.0.0.1:64378" rather than on generated JavaScript.
 function pacTarget(value) {
   if (!value || !value.pacScript || typeof value.pacScript.data !== "string") {
     return JSON.stringify(value);
   }
-  const m = value.pacScript.data.match(/SOCKS5 [\d.]+:\d+/);
-  return m ? m[0] : "pac without a SOCKS5 target";
+  const m = value.pacScript.data.match(/(?:PROXY|SOCKS5) [\d.]+:\d+/);
+  return m ? m[0] : "pac without a proxy target";
 }
 
 // makeEnv builds a stubbed Chromium and loads background.js into it.
 function makeEnv(options) {
   const opts = options || {};
-  const log = { set: [], clear: [], sent: [], timers: [], connects: 0 };
+  const log = { set: [], clear: [], sent: [], timers: [], connects: 0, localSet: [], sessionSet: [] };
   const mkEvent = () => {
     const fns = [];
     return { addListener: (f) => fns.push(f), _fire: (...a) => fns.forEach((f) => f(...a)) };
@@ -73,11 +73,21 @@ function makeEnv(options) {
     storage: {
       local: {
         get: async () => ({ profileID: "0f8fad5b-d9cb-469f-a165-70867728950e" }),
-        set: async () => {},
+        set: async (v) => { log.localSet.push(v); },
       },
-      session: { get: async () => ({}), set: async () => {} },
+      session: {
+        get: async () => (opts.session || {}),
+        set: async (v) => { log.sessionSet.push(v); },
+      },
     },
     tabs: { create() {} },
+    webRequest: {
+      onAuthRequired: {
+        addListener: (fn, filter, extra) => {
+          log.authListener = { fn: fn, filter: filter, extra: extra };
+        },
+      },
+    },
   };
 
   let ctx;
@@ -124,12 +134,91 @@ function makeEnv(options) {
     disconnect() { nativePort.onDisconnect._fire(); },
     // popup sends a command the way the popup's port does.
     popup(cmd) { vm.runInContext("send(" + JSON.stringify(cmd) + ");", ctx); },
+    // authRequired fires an authentication challenge at the registered
+    // onAuthRequired listener and returns what it answered.
+    authRequired(details) {
+      if (!log.authListener) throw new Error("no onAuthRequired listener was registered");
+      let answer;
+      log.authListener.fn(details, (a) => { answer = a; });
+      if (answer === undefined) throw new Error("the listener never answered the challenge");
+      return answer;
+    },
+    authListener: () => log.authListener,
     // runNextTimer fires the pending reconnect timer and returns its delay.
     runNextTimer() {
       const t = log.timers.shift();
       if (!t) throw new Error("no timer was scheduled");
       t.fn();
       return t.ms;
+    },
+  };
+}
+
+// makeFirefoxEnv builds a stubbed Zen: an MV3 event page with
+// browser.proxy.onRequest, rules.js already loaded, and no importScripts. It is
+// the other half of the proxy layer, and the only place the SOCKS credential
+// is used.
+function makeFirefoxEnv() {
+  const log = { onRequest: null, sent: [], timers: [], sessionSet: [], localSet: [] };
+  const mkEvent = () => {
+    const fns = [];
+    return { addListener: (f) => fns.push(f), _fire: (...a) => fns.forEach((f) => f(...a)) };
+  };
+  let nativePort = null;
+  const browserApi = {
+    runtime: {
+      lastError: null,
+      connectNative() {
+        nativePort = {
+          onMessage: mkEvent(),
+          onDisconnect: mkEvent(),
+          postMessage: (m) => log.sent.push(m.cmd),
+          disconnect() {},
+        };
+        return nativePort;
+      },
+      onConnect: mkEvent(),
+      onStartup: mkEvent(),
+      onInstalled: mkEvent(),
+    },
+    proxy: { onRequest: { addListener: (fn) => { log.onRequest = fn; } } },
+    storage: {
+      local: {
+        get: async () => ({ profileID: "0f8fad5b-d9cb-469f-a165-70867728950e" }),
+        set: async (v) => { log.localSet.push(v); },
+      },
+      session: { get: async () => ({}), set: async (v) => { log.sessionSet.push(v); } },
+    },
+    tabs: { create() {} },
+  };
+  const sandbox = {
+    browser: browserApi,
+    console: { log() {}, warn() {}, error() {} },
+    crypto: crypto,
+    URL: URL,
+    setTimeout: (fn, ms) => { log.timers.push({ fn: fn, ms: ms }); return log.timers.length; },
+    clearTimeout: () => {},
+  };
+  sandbox.self = sandbox;
+  sandbox.globalThis = sandbox;
+  const ctx = vm.createContext(sandbox);
+  // The event page lists rules.js first in background.scripts.
+  vm.runInContext(read("rules.js"), ctx, { filename: "rules.js" });
+  vm.runInContext(read("background.js"), ctx, { filename: "background.js" });
+
+  return {
+    ctx: ctx,
+    log: log,
+    status(fields) {
+      nativePort.onMessage._fire(Object.assign(
+        { event: "status", state: "", proxyPort: 0, tailnet: "" },
+        fields
+      ));
+    },
+    // resolve asks the split-tunnel listener what to do with a URL.
+    resolve(url) {
+      if (!log.onRequest) throw new Error("no proxy.onRequest listener was registered");
+      return log.onRequest({ url: url });
     },
   };
 }
@@ -161,7 +250,7 @@ test("the PAC is reinstalled after a Disconnect and Connect on one host", async 
 
   env.status(RUNNING);
   await flush();
-  eq(env.log.set, ["SOCKS5 127.0.0.1:64378"], "PAC installed on the first Running");
+  eq(env.log.set, ["PROXY 127.0.0.1:64378"], "PAC installed on the first Running");
 
   env.popup("down");
   env.status(Object.assign({}, RUNNING, { state: "Stopped" }));
@@ -173,7 +262,7 @@ test("the PAC is reinstalled after a Disconnect and Connect on one host", async 
   await flush();
   env.status(RUNNING); // same process: same port, same tailnet
   await flush();
-  eq(env.log.set, ["SOCKS5 127.0.0.1:64378", "SOCKS5 127.0.0.1:64378"], "PAC reinstalled on Connect");
+  eq(env.log.set, ["PROXY 127.0.0.1:64378", "PROXY 127.0.0.1:64378"], "PAC reinstalled on Connect");
   eq(env.log.sent, ["init", "down", "up"], "commands reaching the host");
 });
 
@@ -190,7 +279,7 @@ test("a host restart on a new port reinstalls the PAC", async () => {
   env.runNextTimer(); // the reconnect
   env.status({ state: "Running", proxyPort: 2222, tailnet: "tail4d5e6f.ts.net" });
   await flush();
-  eq(env.log.set, ["SOCKS5 127.0.0.1:1111", "SOCKS5 127.0.0.1:2222"], "PAC follows the new port");
+  eq(env.log.set, ["PROXY 127.0.0.1:1111", "PROXY 127.0.0.1:2222"], "PAC follows the new port");
 });
 
 test("a tailnet rename while Running rewrites the PAC", async () => {
@@ -269,7 +358,7 @@ test("single-label MagicDNS names are proxied and loopback is not", () => {
 
   for (const host of ["wiki", "server"]) {
     if (isTailnet(host) !== true) throw new Error(host + " goes DIRECT; a MagicDNS short name must be proxied");
-    if (findProxy("http://" + host + "/", host) !== "SOCKS5 127.0.0.1:51234") {
+    if (findProxy("http://" + host + "/", host) !== "PROXY 127.0.0.1:51234") {
       throw new Error("the PAC sends " + host + " DIRECT; a MagicDNS short name must be proxied");
     }
   }
@@ -305,7 +394,7 @@ test("the split-tunnel rules and the generated PAC agree", () => {
   ];
   for (const host of proxied) {
     if (isTailnet(host, "tail4d5e6f.ts.net") !== true) throw new Error("predicate sends " + JSON.stringify(host) + " direct, want proxied");
-    if (findProxy("http://" + host + "/", host) !== "SOCKS5 127.0.0.1:51234") throw new Error("PAC sends " + JSON.stringify(host) + " direct, want proxied");
+    if (findProxy("http://" + host + "/", host) !== "PROXY 127.0.0.1:51234") throw new Error("PAC sends " + JSON.stringify(host) + " direct, want proxied");
   }
   for (const host of direct) {
     if (isTailnet(host, "tail4d5e6f.ts.net") !== false) throw new Error("predicate proxies " + JSON.stringify(host) + ", want direct");
@@ -533,6 +622,139 @@ test("the PAC routes a custom MagicDNS domain once the suffix is known", () => {
   const decideBlind = new Function("url", "host", blind + "\nreturn FindProxyForURL(url, host);");
   eq(decideBlind("http://host.my-tailnet.example.com/", "host.my-tailnet.example.com"), "DIRECT",
     "a custom domain before the suffix is known");
+});
+
+// ------------------------------------------------------------- H2, the token
+
+const TOKEN = "tok-AAAA1111";
+const RUNNING_AUTH = Object.assign({}, RUNNING, { proxyToken: TOKEN });
+
+// Chromium reaches the proxy over HTTP because it cannot authenticate SOCKS5,
+// so the PAC has to say PROXY. A SOCKS5 PAC would produce a proxy the browser
+// can never authenticate to.
+test("the PAC sends tailnet hosts to PROXY, not SOCKS5", async () => {
+  const env = makeEnv();
+  await flush();
+  env.status(RUNNING_AUTH);
+  await flush();
+  eq(env.log.set, ["PROXY 127.0.0.1:64378"], "the PAC target");
+
+  const rules = rulesContext();
+  const pac = rules.tailtabBuildPac(64378, "tail4d5e6f.ts.net");
+  if (pac.indexOf("SOCKS5") !== -1) throw new Error("the PAC still offers SOCKS5");
+  if (pac.indexOf("PROXY 127.0.0.1:64378; DIRECT") !== -1) {
+    throw new Error("the PAC has a DIRECT fallback; a tailnet request must fail, not go out direct");
+  }
+});
+
+// G11. onAuthRequired fires for every 401 and 407 in the browser. An unscoped
+// answer would hand the tailnet credential to any site or proxy that asked.
+test("the proxy challenge is answered only for our own listener", async () => {
+  const env = makeEnv();
+  await flush();
+  env.status(RUNNING_AUTH);
+  await flush();
+
+  const ours = { isProxy: true, challenger: { host: "127.0.0.1", port: 64378 } };
+  eq(env.authRequired(ours), { authCredentials: { username: "tailtab", password: TOKEN } },
+    "our own challenger");
+
+  const foreign = [
+    ["a site's 401", { isProxy: false, challenger: { host: "127.0.0.1", port: 64378 } }],
+    ["another local proxy", { isProxy: true, challenger: { host: "127.0.0.1", port: 8080 } }],
+    ["a remote proxy", { isProxy: true, challenger: { host: "proxy.example.com", port: 64378 } }],
+    ["a spoofed host name", { isProxy: true, challenger: { host: "127.0.0.1.evil.com", port: 64378 } }],
+    ["no challenger at all", { isProxy: true }],
+    ["nothing at all", null],
+  ];
+  for (const [what, details] of foreign) {
+    eq(env.authRequired(details), {}, "answer to " + what);
+  }
+
+  // Registered at the top level, for every URL, and asynchronously — the three
+  // things Chromium requires of a proxy-auth provider.
+  const reg = env.authListener();
+  eq(reg.extra, ["asyncBlocking"], "extraInfoSpec");
+  eq(reg.filter, { urls: ["<all_urls>"] }, "url filter");
+});
+
+test("a challenge with no token yet is answered promptly with nothing", async () => {
+  const env = makeEnv();
+  await flush();
+  // Running, but the host sent no token: answer at once rather than leaving
+  // the request hanging on a dialog (G13).
+  env.status(RUNNING);
+  await flush();
+  eq(env.authRequired({ isProxy: true, challenger: { host: "127.0.0.1", port: 64378 } }), {},
+    "answer with no token");
+});
+
+test("a host restart rotates both the port and the token", async () => {
+  const env = makeEnv();
+  await flush();
+  env.status({ state: "Running", proxyPort: 1111, tailnet: "tail4d5e6f.ts.net", proxyToken: "first-token" });
+  await flush();
+  eq(env.authRequired({ isProxy: true, challenger: { host: "127.0.0.1", port: 1111 } }),
+    { authCredentials: { username: "tailtab", password: "first-token" } }, "the first token");
+
+  env.disconnect();
+  await flush();
+  env.runNextTimer(); // the reconnect
+  env.status({ state: "Running", proxyPort: 2222, tailnet: "tail4d5e6f.ts.net", proxyToken: "second-token" });
+  await flush();
+
+  eq(env.log.set, ["PROXY 127.0.0.1:1111", "PROXY 127.0.0.1:2222"], "the PAC follows the new port");
+  eq(env.authRequired({ isProxy: true, challenger: { host: "127.0.0.1", port: 2222 } }),
+    { authCredentials: { username: "tailtab", password: "second-token" } }, "the new token");
+  // The old port is not ours any more.
+  eq(env.authRequired({ isProxy: true, challenger: { host: "127.0.0.1", port: 1111 } }), {},
+    "a challenge from the dead port");
+});
+
+test("the token never reaches storage.local or the popup", async () => {
+  const env = makeEnv();
+  await flush();
+  const port = env.openPopup();
+  env.status(RUNNING_AUTH);
+  await flush();
+
+  const local = JSON.stringify(env.log.localSet);
+  if (local.indexOf(TOKEN) !== -1) throw new Error("the token was written to storage.local: " + local);
+  const pushed = JSON.stringify(env.popupMessages);
+  if (pushed.indexOf(TOKEN) !== -1) throw new Error("the token was pushed to the popup: " + pushed);
+  // It is kept in storage.session, which is cleared when the browser closes.
+  const session = JSON.stringify(env.log.sessionSet);
+  if (session.indexOf(TOKEN) === -1) throw new Error("the token was not kept in storage.session");
+  if (port.name !== "popup") throw new Error("the popup port was not opened");
+});
+
+// Zen authenticates SOCKS5 in-protocol, which Chromium cannot do at all.
+test("Firefox sends the credential with the SOCKS proxy info", async () => {
+  const env = makeFirefoxEnv();
+  await flush();
+  env.status(RUNNING_AUTH);
+  await flush();
+
+  eq(env.resolve("http://wiki/"),
+    { type: "socks", host: "127.0.0.1", port: 64378, proxyDNS: true, username: "tailtab", password: TOKEN },
+    "a tailnet host");
+  eq(env.resolve("https://github.com/"), { type: "direct" }, "the public internet");
+
+  // No PAC and no proxy settings are touched on this side.
+  if (env.log.localSet.some((v) => JSON.stringify(v).indexOf(TOKEN) !== -1)) {
+    throw new Error("the token was written to storage.local");
+  }
+});
+
+test("Firefox still proxies a tailnet host before the token arrives", async () => {
+  const env = makeFirefoxEnv();
+  await flush();
+  env.status({ state: "Running", proxyPort: 64378, tailnet: "tail4d5e6f.ts.net" });
+  await flush();
+  // Without credentials the request fails at the proxy, which is the right
+  // failure: sending it DIRECT would leak a tailnet name to the public DNS.
+  eq(env.resolve("http://wiki/"),
+    { type: "socks", host: "127.0.0.1", port: 64378, proxyDNS: true }, "a tailnet host with no token");
 });
 
 (async () => {

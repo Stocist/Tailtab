@@ -10,6 +10,9 @@ package proxy
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -34,6 +37,26 @@ type DialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
 
 // ErrNotTailnet is returned for a destination the tailnet does not serve.
 var ErrNotTailnet = errors.New("not a tailnet destination")
+
+// User is the username half of the proxy credential. It is fixed; the password
+// is the per-process token below.
+const User = "tailtab"
+
+// NewToken returns a fresh proxy password: 32 bytes from crypto/rand, in
+// base64url. One is generated per host process and given to the extension in
+// every status event, so only the browser profile this host serves can use the
+// listener. Without it any local process could borrow the profile's tailnet
+// identity simply by connecting to the port.
+//
+// It is a secret: it must never be logged, and it must never be shown in the
+// popup.
+func NewToken() (string, error) {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("generating the proxy token: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b[:]), nil
+}
 
 // Tailscale's address ranges: CGNAT for IPv4, and its ULA prefix for IPv6.
 var (
@@ -149,9 +172,10 @@ func dialTailnet(ts *tsnet.Server, suffix func() string) DialFunc {
 // Server is the loopback proxy. Both protocols share one port: SOCKS5 and HTTP
 // are told apart from the first byte of each connection.
 type Server struct {
-	dial DialFunc
-	ln   net.Listener
-	http *http.Server
+	dial  DialFunc
+	ln    net.Listener
+	http  *http.Server
+	token string
 
 	mu sync.Mutex
 	// suffix is the node's MagicDNS suffix, pushed in from the status stream.
@@ -186,8 +210,8 @@ func (s *Server) MagicDNSSuffix() string {
 // proxy comes up with the node, before login, so the extension can point the
 // browser at a stable port once; connections simply fail until the node is
 // running.
-func Start(ts *tsnet.Server) (*Server, error) {
-	s := &Server{}
+func Start(ts *tsnet.Server, token string) (*Server, error) {
+	s := &Server{token: token}
 	if err := s.serve(dialTailnet(ts, s.MagicDNSSuffix)); err != nil {
 		return nil, err
 	}
@@ -196,8 +220,8 @@ func Start(ts *tsnet.Server) (*Server, error) {
 
 // start builds a server around an arbitrary dialer. Tests use it; Start is the
 // only caller in the program.
-func start(dial DialFunc) (*Server, error) {
-	s := &Server{}
+func start(dial DialFunc, token string) (*Server, error) {
+	s := &Server{token: token}
 	if err := s.serve(dial); err != nil {
 		return nil, err
 	}
@@ -205,6 +229,12 @@ func start(dial DialFunc) (*Server, error) {
 }
 
 func (s *Server) serve(dial DialFunc) error {
+	// A server with no credential would be the open loopback proxy this whole
+	// mechanism exists to close, so it is a programming error rather than a
+	// mode.
+	if s.token == "" {
+		return errors.New("tailtab: the proxy needs a token")
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return fmt.Errorf("binding the loopback proxy: %w", err)
@@ -226,11 +256,21 @@ func (s *Server) serve(dial DialFunc) error {
 		}
 	}()
 	go func() {
-		// No authentication: the listener is on loopback with a random port,
-		// and Chromium cannot do SOCKS5 auth at all (research/browser.md §1.3).
+		// Zen reaches the listener over SOCKS5 and authenticates in-protocol
+		// (RFC 1929). Setting these makes the server offer only password
+		// authentication, so a client that asks for "no auth" is refused
+		// outright. Edge cannot do this at all — Chromium has never
+		// implemented SOCKS5 auth (research/browser.md §1.3) — which is why it
+		// uses the HTTP side and a 407 instead.
+		//
+		// The comparison inside socks5.Server is a plain !=, not a
+		// constant-time one. That is upstream's, not ours; the HTTP side below
+		// uses subtle.ConstantTimeCompare.
 		ss := &socks5.Server{
-			Logf:   logger.WithPrefix(log.Printf, "socks5: "),
-			Dialer: s.dial,
+			Logf:     logger.WithPrefix(log.Printf, "socks5: "),
+			Dialer:   s.dial,
+			Username: User,
+			Password: s.token,
 		}
 		if err := ss.Serve(socksLn); err != nil && !errors.Is(err, net.ErrClosed) {
 			log.Printf("SOCKS5 proxy stopped: %v", err)
@@ -286,6 +326,18 @@ func (s *Server) handler() http.Handler {
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Before anything else, including the tailnet rules: an unauthorised
+		// caller learns nothing about this tailnet, not even which names it
+		// would have served.
+		if !s.authorized(r.Header.Get("Proxy-Authorization")) {
+			w.Header().Set("Proxy-Authenticate", `Basic realm="tailtab"`)
+			w.Header().Set("Connection", "close")
+			http.Error(w, "tailtab: proxy authentication required", http.StatusProxyAuthRequired)
+			return
+		}
+		// This is also what strips Proxy-Authorization from a plain request
+		// before it is forwarded: the credential is for this hop only, and no
+		// tailnet service has any business seeing it.
 		for _, h := range hopByHop {
 			r.Header.Del(h)
 		}
@@ -305,6 +357,35 @@ func (s *Server) handler() http.Handler {
 		}
 		rp.ServeHTTP(w, r)
 	})
+}
+
+// authorized reports whether a Proxy-Authorization header carries this
+// process's credential. Both halves are compared in constant time, and both
+// comparisons always run: a short circuit on the username would leak, by
+// timing, whether a guess had the username right.
+func (s *Server) authorized(header string) bool {
+	user, pass, ok := basicProxyAuth(header)
+	if !ok {
+		return false
+	}
+	userOK := subtle.ConstantTimeCompare([]byte(user), []byte(User))
+	passOK := subtle.ConstantTimeCompare([]byte(pass), []byte(s.token))
+	return userOK&passOK == 1
+}
+
+// basicProxyAuth pulls the username and password out of a Basic
+// Proxy-Authorization header. net/http parses Authorization but not this one.
+func basicProxyAuth(header string) (user, pass string, ok bool) {
+	const prefix = "basic "
+	if len(header) < len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
+		return "", "", false
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(header[len(prefix):]))
+	if err != nil {
+		return "", "", false
+	}
+	user, pass, ok = strings.Cut(string(raw), ":")
+	return user, pass, ok
 }
 
 // serveConnect tunnels a CONNECT request to the tailnet.

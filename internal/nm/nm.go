@@ -58,7 +58,12 @@ type Event struct {
 	Hostname  string `json:"hostname,omitempty"`
 	SelfIP    string `json:"selfIP,omitempty"`
 	ProxyPort int    `json:"proxyPort,omitempty"`
-	Error     string `json:"error,omitempty"`
+	// ProxyToken is the password half of the proxy credential, regenerated
+	//per process start. It is a secret shared with this one extension: never
+	// log an event wholesale, never show it in the popup, never write it to
+	// storage.local.
+	ProxyToken string `json:"proxyToken,omitempty"`
+	Error      string `json:"error,omitempty"`
 	// Warnings is the backend's unhealthy warnables, as text for the popup.
 	Warnings []string `json:"warnings,omitempty"`
 }

@@ -20,6 +20,9 @@ const api = typeof browser !== "undefined" ? browser : chrome;
 const USE_ON_REQUEST = typeof api.proxy !== "undefined" && typeof api.proxy.onRequest !== "undefined";
 const BROWSER = USE_ON_REQUEST ? "zen" : "edge";
 const HOST_NAME = "com.stocist.tailtab";
+// The username half of the proxy credential. The password is the per-process
+// token the host sends with every status event.
+const PROXY_USER = "tailtab";
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 
@@ -27,6 +30,10 @@ const RECONNECT_MAX_MS = 30000;
 let status = { state: "Disconnected", error: "", proxyPort: 0, tailnet: "", warnings: [] };
 // Why the proxy could not be configured, if it could not be.
 let proxyProblem = "";
+// The proxy credential from the host. This is a secret: it lives here and in
+// storage.session, never in storage.local, never in the popup, and never in a
+// log line. It changes with every host process.
+let proxyToken = "";
 
 let profileID = null;
 let nativePort = null;
@@ -52,9 +59,47 @@ if (USE_ON_REQUEST) {
       }
       if (!tailtabIsTailnetHost(host, status.tailnet)) return { type: "direct" };
       // proxyDNS keeps MagicDNS names unresolved until they reach the node.
-      return { type: "socks", host: "127.0.0.1", port: port, proxyDNS: true };
+      // Firefox can authenticate SOCKS5 in-protocol, so the credential rides
+      // along here. With no token yet the request still goes to the proxy and
+      // fails there, rather than leaking a tailnet name to the public DNS.
+      const via = { type: "socks", host: "127.0.0.1", port: port, proxyDNS: true };
+      if (proxyToken) {
+        via.username = PROXY_USER;
+        via.password = proxyToken;
+      }
+      return via;
     },
     { urls: ["<all_urls>"] }
+  );
+}
+
+// proxyAuthAnswer decides what to tell Chromium about one authentication
+// challenge. It answers only our own listener: onAuthRequired fires for every
+// 401 and 407 in the browser, so an unscoped handler would hand the token to
+// any site or proxy that asked for one.
+function proxyAuthAnswer(details) {
+  if (!details || details.isProxy !== true) return {};
+  const challenger = details.challenger || {};
+  if (String(challenger.host) !== "127.0.0.1") return {};
+  if (!status.proxyPort || Number(challenger.port) !== Number(status.proxyPort)) return {};
+  if (!proxyToken) return {};
+  return { authCredentials: { username: PROXY_USER, password: proxyToken } };
+}
+
+// Chromium reaches the proxy over HTTP, because it cannot authenticate SOCKS5
+// at all, and answers the listener's 407 here. Registered at the top level and
+// unconditionally, like every other listener: a service worker woken for this
+// event has no chance to register it later.
+if (!USE_ON_REQUEST && api.webRequest && api.webRequest.onAuthRequired) {
+  api.webRequest.onAuthRequired.addListener(
+    (details, callback) => {
+      // Always answer, and answer now. A handler that is slow, or that
+      // cancels, puts Chromium's own proxy-password dialog in front of the
+      // user; an empty answer just means "I have no credentials for this".
+      if (typeof callback === "function") callback(proxyAuthAnswer(details));
+    },
+    { urls: ["<all_urls>"] },
+    ["asyncBlocking"]
   );
 }
 
@@ -184,6 +229,11 @@ function onHostMessage(msg) {
   }
   if (msg.event !== "status") return;
 
+  // Kept out of status: the popup is sent status, and the token must never go
+  // there. It arrives with every status event and rotates with the host.
+  proxyToken = msg.proxyToken || "";
+  saveToken();
+
   setStatus({
     state: msg.state || "",
     authURL: msg.authURL || "",
@@ -277,6 +327,18 @@ function saveStatus() {
   }
 }
 
+// saveToken keeps the credential in storage.session — cleared when the browser
+// closes, and never storage.local, which survives on disk. A worker restarted
+// while the host is still up can then answer a 407 before the next status
+// event arrives.
+function saveToken() {
+  try {
+    if (api.storage && api.storage.session) api.storage.session.set({ proxyToken: proxyToken });
+  } catch (e) {
+    // Losing it costs one status round-trip.
+  }
+}
+
 // The profile ID names the node's state directory on disk. It is generated
 // once and never regenerated: a new ID means a new node and a fresh login.
 async function loadProfileID() {
@@ -303,8 +365,10 @@ loadProfileID().then((id) => {
   sendInit();
   // The service worker may have been restarted with a status already known.
   if (api.storage && api.storage.session) {
-    api.storage.session.get("status").then((v) => {
-      if (v && v.status && !status.proxyPort) {
+    api.storage.session.get(["status", "proxyToken"]).then((v) => {
+      if (!v) return;
+      if (v.proxyToken && !proxyToken) proxyToken = v.proxyToken;
+      if (v.status && !status.proxyPort) {
         status = Object.assign({}, status, { tailnet: v.status.tailnet || status.tailnet });
         pushToPopups();
       }

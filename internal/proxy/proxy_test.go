@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,26 @@ import (
 	"testing"
 	"time"
 )
+
+// testToken is the proxy credential these tests use. The real one is 32 random
+// bytes per host process; the value does not matter here, only that every
+// request has to carry it.
+const testToken = "TESTTOKEN-not-a-real-secret"
+
+// testAuthHeader is what a client sends: Basic base64("tailtab:<token>").
+var testAuthHeader = "Basic " + base64.StdEncoding.EncodeToString([]byte(User+":"+testToken))
+
+// proxyClient returns an HTTP client that proxies through p with the
+// credential. Go puts the userinfo from the proxy URL into Proxy-Authorization
+// on both plain requests and CONNECT.
+func proxyClient(p *Server) *http.Client {
+	u, err := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", p.Port()))
+	if err != nil {
+		panic(err)
+	}
+	u.User = url.UserPassword(User, testToken)
+	return &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(u)}, Timeout: 10 * time.Second}
+}
 
 // recordingDialer stands in for the tailnet dialer: it records the address it
 // was asked for, which is how these tests prove the hostname reaches the dialer
@@ -48,7 +69,7 @@ func TestPlainHTTPIsProxiedByHostname(t *testing.T) {
 	defer backend.Close()
 
 	d := &recordingDialer{target: strings.TrimPrefix(backend.URL, "http://")}
-	p, err := start(d.dial)
+	p, err := start(d.dial, testToken)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -57,11 +78,7 @@ func TestPlainHTTPIsProxiedByHostname(t *testing.T) {
 		t.Fatal("Port() returned 0 after a successful bind")
 	}
 
-	proxyURL, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", p.Port()))
-	c := &http.Client{
-		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
-		Timeout:   10 * time.Second,
-	}
+	c := proxyClient(p)
 	// A single-label MagicDNS name, which is exactly what must not be resolved
 	// before it reaches the dialer.
 	resp, err := c.Get("http://wiki/hello")
@@ -99,7 +116,7 @@ func TestConnectTunnels(t *testing.T) {
 	}()
 
 	d := &recordingDialer{target: ln.Addr().String()}
-	p, err := start(d.dial)
+	p, err := start(d.dial, testToken)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -115,7 +132,8 @@ func TestConnectTunnels(t *testing.T) {
 	// Send the payload immediately after the CONNECT request so it lands in the
 	// server's bufio.Reader: the handler has to flush those buffered bytes into
 	// the tunnel or they are lost.
-	if _, err := io.WriteString(conn, "CONNECT wiki.tail4d5e6f.ts.net:443 HTTP/1.1\r\nHost: wiki.tail4d5e6f.ts.net:443\r\n\r\nping"); err != nil {
+	if _, err := io.WriteString(conn, "CONNECT wiki.tail4d5e6f.ts.net:443 HTTP/1.1\r\nHost: wiki.tail4d5e6f.ts.net:443\r\n"+
+		"Proxy-Authorization: "+testAuthHeader+"\r\n\r\nping"); err != nil {
 		t.Fatalf("writing CONNECT: %v", err)
 	}
 	br := bufio.NewReader(conn)
@@ -145,14 +163,13 @@ func TestDialFailureIsReported(t *testing.T) {
 	fail := func(ctx context.Context, network, addr string) (net.Conn, error) {
 		return nil, fmt.Errorf("the node is not running")
 	}
-	p, err := start(fail)
+	p, err := start(fail, testToken)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	defer p.Close()
 
-	proxyURL, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", p.Port()))
-	c := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}, Timeout: 10 * time.Second}
+	c := proxyClient(p)
 	resp, err := c.Get("http://wiki/")
 	if err != nil {
 		t.Fatalf("GET through the proxy: %v", err)
@@ -167,7 +184,7 @@ func TestOriginStyleRequestRejected(t *testing.T) {
 	p, err := start(func(context.Context, string, string) (net.Conn, error) {
 		t.Error("a path-only request should never reach the dialer")
 		return nil, nil
-	})
+	}, testToken)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -179,7 +196,8 @@ func TestOriginStyleRequestRejected(t *testing.T) {
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	io.WriteString(conn, "GET /admin HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+	io.WriteString(conn, "GET /admin HTTP/1.1\r\nHost: 127.0.0.1\r\n"+
+		"Proxy-Authorization: "+testAuthHeader+"\r\n\r\n")
 	line, err := bufio.NewReader(conn).ReadString('\n')
 	if err != nil {
 		t.Fatalf("reading the response: %v", err)
@@ -246,14 +264,13 @@ func TestCustomMagicDNSSuffixIsRefusedUntilKnown(t *testing.T) {
 	defer backend.Close()
 
 	d := &recordingDialer{target: strings.TrimPrefix(backend.URL, "http://")}
-	p, err := start(d.dial)
+	p, err := start(d.dial, testToken)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	defer p.Close()
 
-	proxyURL, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", p.Port()))
-	c := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}, Timeout: 10 * time.Second}
+	c := proxyClient(p)
 
 	if p.MagicDNSSuffix() != "" {
 		t.Fatalf("a fresh proxy already knows the suffix %q", p.MagicDNSSuffix())
@@ -294,14 +311,13 @@ func TestNonTailnetDestinationsAreRefused(t *testing.T) {
 	p, err := start(func(context.Context, string, string) (net.Conn, error) {
 		dialed = true
 		return nil, fmt.Errorf("should not be reached")
-	})
+	}, testToken)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	defer p.Close()
 
-	proxyURL, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", p.Port()))
-	c := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}, Timeout: 10 * time.Second}
+	c := proxyClient(p)
 
 	resp, err := c.Get("http://github.com/")
 	if err != nil {
@@ -319,7 +335,8 @@ func TestNonTailnetDestinationsAreRefused(t *testing.T) {
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	io.WriteString(conn, "CONNECT github.com:443 HTTP/1.1\r\nHost: github.com:443\r\n\r\n")
+	io.WriteString(conn, "CONNECT github.com:443 HTTP/1.1\r\nHost: github.com:443\r\n"+
+		"Proxy-Authorization: "+testAuthHeader+"\r\n\r\n")
 	line, err := bufio.NewReader(conn).ReadString('\n')
 	if err != nil {
 		t.Fatalf("reading the CONNECT response: %v", err)
@@ -332,28 +349,62 @@ func TestNonTailnetDestinationsAreRefused(t *testing.T) {
 	}
 }
 
-// socks5Connect performs a no-auth SOCKS5 CONNECT and returns the reply code.
-// 0 is success; anything else is a refusal.
-func socks5Connect(t *testing.T, proxyPort int, host string, port uint16) byte {
+// SOCKS5 method numbers, from RFC 1928.
+const (
+	socksNoAuth       = byte(0)
+	socksPassword     = byte(2)
+	socksNoAcceptable = byte(0xff)
+)
+
+// socks5Greet opens a connection to the proxy and offers the given
+// authentication methods. It returns the connection and the method the server
+// chose; 0xff means it accepted none of them.
+func socks5Greet(t *testing.T, proxyPort int, methods ...byte) (net.Conn, byte) {
 	t.Helper()
 	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	t.Cleanup(func() { conn.Close() })
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
 
-	if _, err := conn.Write([]byte{5, 1, 0}); err != nil { // version, one method, "no auth"
+	greeting := append([]byte{5, byte(len(methods))}, methods...)
+	if _, err := conn.Write(greeting); err != nil {
 		t.Fatalf("SOCKS greeting: %v", err)
 	}
-	greeting := make([]byte, 2)
-	if _, err := io.ReadFull(conn, greeting); err != nil {
+	reply := make([]byte, 2)
+	if _, err := io.ReadFull(conn, reply); err != nil {
 		t.Fatalf("reading the SOCKS greeting reply: %v", err)
 	}
-	if greeting[0] != 5 || greeting[1] != 0 {
-		t.Fatalf("SOCKS greeting reply = %v, want [5 0]", greeting)
+	if reply[0] != 5 {
+		t.Fatalf("SOCKS greeting reply = %v, want a version-5 reply", reply)
 	}
+	return conn, reply[1]
+}
 
+// socks5Auth runs the RFC 1929 username/password exchange and returns the
+// server's status byte; 0 is success. A server that hangs up instead of
+// answering is a refusal too.
+func socks5Auth(t *testing.T, conn net.Conn, user, pass string) byte {
+	t.Helper()
+	msg := []byte{1, byte(len(user))}
+	msg = append(msg, user...)
+	msg = append(msg, byte(len(pass)))
+	msg = append(msg, pass...)
+	if _, err := conn.Write(msg); err != nil {
+		t.Fatalf("SOCKS authentication: %v", err)
+	}
+	reply := make([]byte, 2)
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		return 1
+	}
+	return reply[1]
+}
+
+// socks5Request sends a CONNECT for host:port and returns the reply code. 0 is
+// success; anything else is a refusal.
+func socks5Request(t *testing.T, conn net.Conn, host string, port uint16) byte {
+	t.Helper()
 	req := []byte{5, 1, 0, 3, byte(len(host))} // CONNECT, domain name
 	req = append(req, host...)
 	req = append(req, byte(port>>8), byte(port))
@@ -367,6 +418,20 @@ func socks5Connect(t *testing.T, proxyPort int, host string, port uint16) byte {
 	return reply[1]
 }
 
+// socks5Connect performs an authenticated SOCKS5 CONNECT and returns the reply
+// code. 0 is success; anything else is a refusal.
+func socks5Connect(t *testing.T, proxyPort int, host string, port uint16) byte {
+	t.Helper()
+	conn, method := socks5Greet(t, proxyPort, socksPassword)
+	if method != socksPassword {
+		t.Fatalf("the server chose method %d, want password authentication (%d)", method, socksPassword)
+	}
+	if status := socks5Auth(t, conn, User, testToken); status != 0 {
+		t.Fatalf("SOCKS authentication with the right credential failed with status %d", status)
+	}
+	return socks5Request(t, conn, host, port)
+}
+
 func TestSOCKSRefusesNonTailnetDestinations(t *testing.T) {
 	// SOCKS has no handler in front of it, so the guard has to live on the
 	// dialer itself.
@@ -374,7 +439,7 @@ func TestSOCKSRefusesNonTailnetDestinations(t *testing.T) {
 	p, err := start(func(_ context.Context, _, addr string) (net.Conn, error) {
 		dialed <- addr
 		return nil, fmt.Errorf("no node")
-	})
+	}, testToken)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -412,14 +477,13 @@ func TestXForwardedForIsNotAdded(t *testing.T) {
 	defer backend.Close()
 
 	d := &recordingDialer{target: strings.TrimPrefix(backend.URL, "http://")}
-	p, err := start(d.dial)
+	p, err := start(d.dial, testToken)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	defer p.Close()
 
-	proxyURL, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", p.Port()))
-	c := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}, Timeout: 10 * time.Second}
+	c := proxyClient(p)
 	resp, err := c.Get("http://wiki/")
 	if err != nil {
 		t.Fatalf("GET through the proxy: %v", err)
@@ -427,5 +491,236 @@ func TestXForwardedForIsNotAdded(t *testing.T) {
 	resp.Body.Close()
 	if xff := <-got; xff != "" {
 		t.Errorf("the tailnet service saw X-Forwarded-For: %q, want no header", xff)
+	}
+}
+
+// --------------------------------------------------------------- H2, auth
+
+// connectStatus opens a raw connection, sends a CONNECT with the given
+// Proxy-Authorization header value ("" for none), and returns the status line.
+func connectStatus(t *testing.T, proxyPort int, auth string) string {
+	t.Helper()
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	req := "CONNECT wiki:443 HTTP/1.1\r\nHost: wiki:443\r\n"
+	if auth != "" {
+		req += "Proxy-Authorization: " + auth + "\r\n"
+	}
+	if _, err := io.WriteString(conn, req+"\r\n"); err != nil {
+		t.Fatalf("writing CONNECT: %v", err)
+	}
+	br := bufio.NewReader(conn)
+	line, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("reading the CONNECT response: %v", err)
+	}
+	// Drain the headers so the 407's Proxy-Authenticate can be read by the
+	// caller through the same reader.
+	hdrs := map[string]string{}
+	for {
+		h, err := br.ReadString('\n')
+		if err != nil || strings.TrimSpace(h) == "" {
+			break
+		}
+		if k, v, ok := strings.Cut(h, ":"); ok {
+			hdrs[strings.ToLower(strings.TrimSpace(k))] = strings.TrimSpace(v)
+		}
+	}
+	if strings.HasPrefix(line, "HTTP/1.1 407") {
+		if got := hdrs["proxy-authenticate"]; got != `Basic realm="tailtab"` {
+			t.Errorf("407 carried Proxy-Authenticate %q, want Basic realm=\"tailtab\"", got)
+		}
+	}
+	return strings.TrimSpace(line)
+}
+
+// Any local process can open the loopback port. Without a credential it can
+// also borrow this browser profile's tailnet identity, which is what these
+// tests close.
+func TestHTTPRequiresTheToken(t *testing.T) {
+	dialed := false
+	p, err := start(func(context.Context, string, string) (net.Conn, error) {
+		dialed = true
+		return nil, fmt.Errorf("should not be reached")
+	}, testToken)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer p.Close()
+
+	wrong := "Basic " + base64.StdEncoding.EncodeToString([]byte(User+":wrong-token"))
+	wrongUser := "Basic " + base64.StdEncoding.EncodeToString([]byte("someone:"+testToken))
+	for _, tc := range []struct{ name, auth string }{
+		{"no credential", ""},
+		{"wrong token", wrong},
+		{"wrong username", wrongUser},
+		{"not base64", "Basic %%%%"},
+		{"another scheme", "Bearer " + testToken},
+		{"the token alone", testToken},
+	} {
+		if got := connectStatus(t, p.Port(), tc.auth); !strings.HasPrefix(got, "HTTP/1.1 407") {
+			t.Errorf("CONNECT with %s: %q, want 407", tc.name, got)
+		}
+	}
+	// Plain HTTP, the other half of the proxy.
+	plain := &http.Client{
+		Transport: &http.Transport{Proxy: func(*http.Request) (*url.URL, error) {
+			return url.Parse(fmt.Sprintf("http://127.0.0.1:%d", p.Port()))
+		}},
+		Timeout: 10 * time.Second,
+	}
+	resp, err := plain.Get("http://wiki/")
+	if err != nil {
+		t.Fatalf("GET through the proxy: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusProxyAuthRequired {
+		t.Errorf("plain GET with no credential: status %d, want 407", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Proxy-Authenticate"); got != `Basic realm="tailtab"` {
+		t.Errorf("Proxy-Authenticate = %q", got)
+	}
+	if dialed {
+		t.Fatal("an unauthenticated request reached the tailnet dialer")
+	}
+
+	// The same credential that works over SOCKS gets through here, which is
+	// what proves the refusals above were the credential check and not a
+	// broken handler.
+	if got := connectStatus(t, p.Port(), testAuthHeader); strings.HasPrefix(got, "HTTP/1.1 407") {
+		t.Errorf("CONNECT with the right credential: %q, want past the 407", got)
+	}
+	if !dialed {
+		t.Error("an authenticated CONNECT never reached the tailnet dialer")
+	}
+}
+
+// The credential is for this hop. A tailnet service must never see it.
+func TestProxyAuthorizationIsNotForwarded(t *testing.T) {
+	got := make(chan string, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got <- r.Header.Get("Proxy-Authorization")
+	}))
+	defer backend.Close()
+
+	d := &recordingDialer{target: strings.TrimPrefix(backend.URL, "http://")}
+	p, err := start(d.dial, testToken)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer p.Close()
+
+	resp, err := proxyClient(p).Get("http://wiki/")
+	if err != nil {
+		t.Fatalf("GET through the proxy: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d, want 200 with the right credential", resp.StatusCode)
+	}
+	if h := <-got; h != "" {
+		t.Errorf("the tailnet service was sent Proxy-Authorization: %q", h)
+	}
+}
+
+func TestSOCKSRequiresTheToken(t *testing.T) {
+	dialed := make(chan string, 4)
+	p, err := start(func(_ context.Context, _, addr string) (net.Conn, error) {
+		dialed <- addr
+		return nil, fmt.Errorf("no node")
+	}, testToken)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer p.Close()
+
+	// A client offering only "no authentication" is refused outright.
+	if _, method := socks5Greet(t, p.Port(), socksNoAuth); method != socksNoAcceptable {
+		t.Errorf("the server accepted method %d for a no-auth client, want 0xff", method)
+	}
+	// Offering both, the server must still pick password authentication.
+	conn, method := socks5Greet(t, p.Port(), socksNoAuth, socksPassword)
+	if method != socksPassword {
+		t.Fatalf("the server chose method %d, want password authentication", method)
+	}
+	if status := socks5Auth(t, conn, User, "wrong-token"); status == 0 {
+		t.Error("SOCKS authentication with the wrong token succeeded")
+	}
+	conn, method = socks5Greet(t, p.Port(), socksPassword)
+	if method != socksPassword {
+		t.Fatalf("the server chose method %d, want password authentication", method)
+	}
+	if status := socks5Auth(t, conn, "someone", testToken); status == 0 {
+		t.Error("SOCKS authentication with the wrong username succeeded")
+	}
+	select {
+	case addr := <-dialed:
+		t.Errorf("an unauthenticated SOCKS client reached the dialer with %q", addr)
+	default:
+	}
+
+	// The right credential gets through to the guarded dialer, and no further.
+	if code := socks5Connect(t, p.Port(), "wiki", 80); code == 0 {
+		t.Error("SOCKS5 CONNECT reported success with no node running")
+	}
+	select {
+	case addr := <-dialed:
+		if addr != "wiki:80" {
+			t.Errorf("dialer was asked for %q, want wiki:80", addr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("an authenticated SOCKS client never reached the dialer")
+	}
+}
+
+// A guess must not be able to learn how much of the credential it got right
+// from how long the answer took.
+func TestCredentialsAreComparedInConstantTime(t *testing.T) {
+	src, err := os.ReadFile("proxy.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "subtle.ConstantTimeCompare") {
+		t.Error("the credential comparison is not subtle.ConstantTimeCompare")
+	}
+	// Both comparisons must run: a short circuit on the username is a timing
+	// oracle for the username.
+	if strings.Contains(string(src), "userOK && passOK") {
+		t.Error("the two comparisons are short-circuited, which leaks the username by timing")
+	}
+}
+
+func TestAServerWithoutATokenDoesNotStart(t *testing.T) {
+	p, err := start(func(context.Context, string, string) (net.Conn, error) {
+		return nil, nil
+	}, "")
+	if err == nil {
+		p.Close()
+		t.Fatal("a proxy with no token started; that is the open listener this closes")
+	}
+}
+
+func TestNewTokenIsLongAndRandom(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 16; i++ {
+		tok, err := NewToken()
+		if err != nil {
+			t.Fatalf("NewToken: %v", err)
+		}
+		if len(tok) < 40 {
+			t.Errorf("token %q is %d characters; 32 random bytes is 43 in base64url", tok, len(tok))
+		}
+		if strings.ContainsAny(tok, "+/=") {
+			t.Errorf("token %q is not base64url", tok)
+		}
+		if seen[tok] {
+			t.Fatalf("NewToken returned %q twice", tok)
+		}
+		seen[tok] = true
 	}
 }
