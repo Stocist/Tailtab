@@ -52,7 +52,10 @@ function render(msg) {
   // list below, so a node that genuinely cannot reach control still says so.
   const errorLine = st.authURL ? "" : st.error;
 
-  el("state").textContent = running ? "Connected" : state;
+  // "Connected" means the node is up AND the browser is pointed at it. If the
+  // proxy configuration did not take, saying Connected alone would be a lie:
+  // tailnet names are going out over the public internet.
+  el("state").textContent = running ? (msg.proxyProblem ? "Connected, not routing" : "Connected") : state;
   el("hint").textContent = awaitingLogin
     ? "Requesting login link…"
     : errorLine || HINTS[state] || "";

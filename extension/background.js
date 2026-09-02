@@ -139,8 +139,12 @@ async function applyProxy() {
     return;
   }
 
-  proxyProblem = "";
-  await new Promise((resolve) =>
+  // chrome.proxy.settings.set reports a rejected value through
+  // runtime.lastError in the callback, and nowhere else: unread, it is an
+  // "Unchecked runtime.lastError" line in a console nobody has open, while the
+  // browser carries on with no proxy configuration and the popup says
+  // Connected. That is how the non-ASCII PAC went unnoticed.
+  const failure = await new Promise((resolve) =>
     chrome.proxy.settings.set(
       {
         scope: "regular",
@@ -149,9 +153,19 @@ async function applyProxy() {
           pacScript: { data: pac, mandatory: false },
         },
       },
-      resolve
+      () => {
+        const err = chrome.runtime.lastError;
+        resolve(err && err.message ? err.message : "");
+      }
     )
   );
+  if (failure) {
+    proxyProblem = "The browser rejected tailtab's proxy configuration, so tailnet traffic is not routed: " + failure;
+    pushToPopups();
+    return;
+  }
+  proxyProblem = "";
+  pushToPopups();
 }
 
 // clearProxy hands the setting back. It runs on any transition out of Running,

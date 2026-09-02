@@ -65,8 +65,20 @@ function makeEnv(options) {
     },
     proxy: {
       settings: {
-        get: (_details, cb) => cb({ levelOfControl: opts.levelOfControl || "controllable_by_this_extension" }),
-        set: (details, cb) => { log.set.push(pacTarget(details.value)); if (cb) cb(); },
+        get: (_details, cb) => cb({ levelOfControl: log.levelOfControl || opts.levelOfControl || "controllable_by_this_extension" }),
+        set: (details, cb) => {
+          log.set.push(pacTarget(details.value));
+          if (!cb) return;
+          // Chromium reports a rejected value through runtime.lastError, set
+          // only for the duration of the callback.
+          if (opts.setError) {
+            chrome.runtime.lastError = { message: opts.setError };
+            cb();
+            chrome.runtime.lastError = null;
+            return;
+          }
+          cb();
+        },
         clear: (details, cb) => { log.clear.push(details.scope); if (cb) cb(); },
       },
     },
@@ -144,6 +156,8 @@ function makeEnv(options) {
       return answer;
     },
     authListener: () => log.authListener,
+    // setLevelOfControl changes what proxy.settings.get reports from now on.
+    setLevelOfControl(v) { log.levelOfControl = v; },
     // runNextTimer fires the pending reconnect timer and returns its delay.
     runNextTimer() {
       const t = log.timers.shift();
@@ -849,6 +863,61 @@ test("a PAC that cannot be built is reported instead of installed", async () => 
   const problem = vm.runInContext("proxyProblem", env.ctx);
   if (!problem || problem.indexOf("not routed") === -1) {
     throw new Error("the popup was not told routing is broken: " + JSON.stringify(problem));
+  }
+});
+
+// The browser can reject the proxy configuration after accepting the call. It
+// says so through runtime.lastError inside the callback and nowhere else, so an
+// unread lastError is a browser with no proxy and a popup saying Connected.
+test("a rejected proxy configuration is reported, not swallowed", async () => {
+  const env = makeEnv({ setError: "\'pacScript.data\' supports only ASCII code (encode URLs in Punycode format)." });
+  await flush();
+  env.status(RUNNING_AUTH);
+  await flush();
+
+  const problem = vm.runInContext("proxyProblem", env.ctx);
+  if (!problem) throw new Error("a rejected proxy configuration left proxyProblem empty");
+  if (problem.indexOf("not routed") === -1 || problem.indexOf("ASCII") === -1) {
+    throw new Error("the reason was lost: " + JSON.stringify(problem));
+  }
+  // And the popup was told, in the same slot as a levelOfControl problem.
+  const port = env.openPopup();
+  const last = env.popupMessages[env.popupMessages.length - 1];
+  if (!last || last.proxyProblem !== problem) {
+    throw new Error("the popup was not given the problem: " + JSON.stringify(last));
+  }
+  if (port.name !== "popup") throw new Error("the popup port was not opened");
+});
+
+test("a proxy configuration that takes clears an earlier problem", async () => {
+  const env = makeEnv({ levelOfControl: "controlled_by_policy" });
+  await flush();
+  env.status(RUNNING_AUTH);
+  await flush();
+  if (!vm.runInContext("proxyProblem", env.ctx)) throw new Error("the policy problem was not recorded");
+
+  // The policy is lifted and the next attempt succeeds.
+  vm.runInContext("proxyProblem", env.ctx);
+  env.setLevelOfControl("controllable_by_this_extension");
+  env.status(Object.assign({}, RUNNING_AUTH, { proxyPort: 64379 }));
+  await flush();
+  eq(vm.runInContext("proxyProblem", env.ctx), "", "proxyProblem after a successful write");
+  eq(env.log.set, ["PROXY 127.0.0.1:64379"], "the PAC that was installed");
+});
+
+// The popup must not say the browser is routing through the tailnet when it is
+// not: with no proxy configuration, tailnet names go out over the internet.
+test("the popup does not claim to be routing when the proxy did not take", () => {
+  const ui = openPopupUI();
+  ui.push({
+    connected: true,
+    proxyProblem: "The browser rejected tailtab's proxy configuration, so tailnet traffic is not routed: 'pacScript.data' supports only ASCII code (encode URLs in Punycode format).",
+    status: { state: "Running", tailnet: "tail4d5e6f.ts.net", hostname: "mac-tailtab-edge", selfIP: "100.64.0.9", proxyPort: 64378, warnings: [] },
+  });
+  eq(ui.els.state.textContent, "Connected, not routing", "state line");
+  eq(ui.els.warning.hidden, false, "the warning is shown");
+  if (ui.els.warning.textContent.indexOf("not routed") === -1) {
+    throw new Error("the warning does not say routing is broken: " + ui.els.warning.textContent);
   }
 });
 
