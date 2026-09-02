@@ -23,6 +23,10 @@ const HOST_NAME = "com.stocist.tailtab";
 // The username half of the proxy credential. The password is the per-process
 // token the host sends with every status event.
 const PROXY_USER = "tailtab";
+// The realm the host puts in its 407 challenge, which is how a challenge from
+// a tailtab host that is not ours (an earlier life's) is told apart from
+// another local proxy.
+const PROXY_REALM = "tailtab";
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 
@@ -156,14 +160,16 @@ async function proxyAuthAnswer(details) {
     // The browser is still pointed at a proxy we no longer run — a PAC left
     // behind by an earlier host process, or by an earlier version of this
     // extension. Rewrite it so the next attempt reaches the live one, and
-    // decline this one: whatever is on that port now is not ours to trust.
-    // Declining, not cancelling: from here a stale tailtab port and somebody
-    // else's local proxy look the same, and cancelling would break the
-    // latter's own login. The startup sweep (dropStaleProxy) is what keeps
-    // this path rare.
+    // refuse this one: whatever is on that port now is not ours to trust.
+    //
+    // How to refuse depends on who is asking. A tailtab host announces itself
+    // in the challenge (realm="tailtab"), so a stale one from an earlier life
+    // is cancelled outright: nobody can type that password, and declining
+    // would put Chromium's dialog up for it. Anything else on loopback is
+    // somebody else's proxy, and declining leaves its own login alone.
     console.warn("tailtab: a proxy challenge came from port " + challenger.port + ", but our proxy is on " + status.proxyPort + "; reinstalling the proxy settings");
     applyProxy();
-    return {};
+    return details.realm === PROXY_REALM ? { cancel: true } : {};
   }
   return { authCredentials: { username: PROXY_USER, password: proxyToken } };
 }

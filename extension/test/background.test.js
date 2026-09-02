@@ -789,11 +789,16 @@ test("a challenge from a port we no longer use reinstalls the proxy settings", a
   await flush();
   const before = env.log.set.length;
 
-  eq(await env.authRequired({ isProxy: true, challenger: { host: "127.0.0.1", port: 55555 } }), {},
-    "a challenge from a stale port");
+  eq(await env.authRequired({ isProxy: true, realm: "tailtab", challenger: { host: "127.0.0.1", port: 55555 } }), { cancel: true },
+    "a challenge from a stale tailtab host is cancelled, so no password dialog appears");
   await flush();
   eq(env.log.set.length, before + 1, "the proxy settings were reinstalled");
   eq(env.log.set[env.log.set.length - 1], "PROXY 127.0.0.1:64378", "and they point at the live proxy");
+
+  // Somebody else's proxy on loopback gets a plain decline, so its own login
+  // still works.
+  eq(await env.authRequired({ isProxy: true, realm: "squid", challenger: { host: "127.0.0.1", port: 3128 } }), {},
+    "a challenge from another local proxy is declined, not cancelled");
 });
 
 test("a host restart rotates both the port and the token", async () => {
