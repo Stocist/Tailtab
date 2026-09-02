@@ -793,6 +793,65 @@ test("Firefox still proxies a tailnet host before the token arrives", async () =
     { type: "socks", host: "127.0.0.1", port: 64378, proxyDNS: true }, "a tailnet host with no token");
 });
 
+// ------------------------------------------------------ the PAC must be ASCII
+
+// Found in live A3: Edge logged "'pacScript.data' supports only ASCII code
+// (encode URLs in Punycode format)" and dropped the whole script, leaving the
+// browser with no proxy configuration while the popup said Connected. The
+// source of tailtabIsTailnetHost is embedded in the PAC, comments and all, so
+// one em dash in one of its comments was enough.
+test("the generated PAC is pure ASCII", () => {
+  const rules = rulesContext();
+  const pac = rules.tailtabBuildPac(64378, "tail4d5e6f.ts.net");
+  const bad = [];
+  for (let i = 0; i < pac.length; i++) {
+    if (pac.charCodeAt(i) > 127) bad.push(JSON.stringify(pac[i]) + " at " + i);
+  }
+  if (bad.length) throw new Error("the PAC has non-ASCII characters Chromium would reject: " + bad.join(", "));
+
+  // The whole file, not just the part that is embedded today: a comment moved
+  // into the embedded function later would otherwise break Edge silently.
+  const src = read("rules.js");
+  for (let i = 0; i < src.length; i++) {
+    if (src.charCodeAt(i) > 127) {
+      const line = src.slice(0, i).split("\n").length;
+      throw new Error("rules.js line " + line + " has a non-ASCII character: " + JSON.stringify(src[i]));
+    }
+  }
+});
+
+test("a non-ASCII character in the embedded function is refused, not shipped", () => {
+  // The same file with one em dash put back into tailtabIsTailnetHost.
+  const broken = read("rules.js").replace("// Never proxy the loopback", "// Never proxy the loopback \u2014 it is ours");
+  const ctx = vm.createContext({});
+  vm.runInContext(broken, ctx, { filename: "rules-broken.js" });
+  let threw = null;
+  try {
+    ctx.tailtabBuildPac(64378, "tail4d5e6f.ts.net");
+  } catch (e) {
+    threw = e;
+  }
+  if (!threw) throw new Error("a PAC Chromium would reject was built without complaint");
+  if (String(threw.message).indexOf("non-ASCII") === -1) {
+    throw new Error("the error does not say what is wrong: " + threw.message);
+  }
+});
+
+test("a PAC that cannot be built is reported instead of installed", async () => {
+  const env = makeEnv();
+  await flush();
+  // Make the build fail the way a stray non-ASCII comment would.
+  vm.runInContext("tailtabBuildPac = function () { throw new Error('non-ASCII character'); };", env.ctx);
+  env.status(RUNNING_AUTH);
+  await flush();
+
+  eq(env.log.set, [], "nothing was installed");
+  const problem = vm.runInContext("proxyProblem", env.ctx);
+  if (!problem || problem.indexOf("not routed") === -1) {
+    throw new Error("the popup was not told routing is broken: " + JSON.stringify(problem));
+  }
+});
+
 (async () => {
   let failed = 0;
   for (const t of tests) {

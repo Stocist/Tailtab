@@ -128,6 +128,17 @@ async function applyProxy() {
     pushToPopups();
     return;
   }
+  // tailtabBuildPac refuses to hand Chromium a script it would reject. Better
+  // to say so in the popup than to install nothing and report Connected.
+  let pac;
+  try {
+    pac = tailtabBuildPac(port, status.tailnet);
+  } catch (e) {
+    proxyProblem = "tailtab could not build a proxy script, so tailnet traffic is not routed: " + e.message;
+    pushToPopups();
+    return;
+  }
+
   proxyProblem = "";
   await new Promise((resolve) =>
     chrome.proxy.settings.set(
@@ -135,7 +146,7 @@ async function applyProxy() {
         scope: "regular",
         value: {
           mode: "pac_script",
-          pacScript: { data: tailtabBuildPac(port, status.tailnet), mandatory: false },
+          pacScript: { data: pac, mandatory: false },
         },
       },
       resolve

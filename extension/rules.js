@@ -61,9 +61,9 @@ function tailtabIsTailnetHost(host, tailnetDomain) {
     var d = String(tailnetDomain).replace(/^\.+|\.+$/g, "");
     // The suffix comes from the coordination server and is not trusted on
     // sight: a suffix of "com" would route the whole internet through the
-    // tailnet. It has to look like a tailnet's own domain — lowercase, two or
+    // tailnet. It has to look like a tailnet's own domain: lowercase, two or
     // more labels, each 1-63 characters of a-z, 0-9 and "-" and not starting
-    // or ending with a dash — and not "ts.net", which is the public parent of
+    // or ending with a dash, and not "ts.net", which is the public parent of
     // every tailnet and is covered by the rule above. The host's guard applies
     // the same test (internal/proxy, validMagicDNSSuffix).
     var ok = d.length > 0 && d.length <= 253 && d !== "ts.net" &&
@@ -82,24 +82,38 @@ function tailtabIsTailnetHost(host, tailnetDomain) {
 // DIRECT.
 //
 // PROXY, not SOCKS5: the listener requires a credential, and Chromium has never
-// implemented SOCKS5 authentication (research/browser.md §1.3). Over PROXY the
-// browser speaks HTTP to the listener — CONNECT for https, a forwarded request
-// for http — so the 407 challenge reaches webRequest.onAuthRequired and the
+// implemented SOCKS5 authentication (research/browser.md section 1.3). Over PROXY the
+// browser speaks HTTP to the listener, CONNECT for https and a forwarded request
+// for http, so the 407 challenge reaches webRequest.onAuthRequired and the
 // token can be supplied. Hostnames still travel unresolved, in the CONNECT
 // line, which is what keeps MagicDNS resolution inside the node.
 //
 // There is deliberately no "; DIRECT" fallback: a tailnet request that cannot
 // authenticate must fail, not quietly go out over the public internet.
 function tailtabBuildPac(port, tailnetDomain) {
-  return (
+  var pac =
     tailtabIsTailnetHost.toString() +
     "\nfunction FindProxyForURL(url, host) {\n" +
     "  return tailtabIsTailnetHost(host, " +
     JSON.stringify(tailnetDomain || "") +
     ") ? " +
     JSON.stringify("PROXY 127.0.0.1:" + port) +
-    " : \"DIRECT\";\n}\n"
-  );
+    " : \"DIRECT\";\n}\n";
+
+  // Chromium refuses a PAC script containing any byte outside ASCII:
+  // "'pacScript.data' supports only ASCII code (encode URLs in Punycode
+  // format)". It refuses the whole script, so the browser is left with no
+  // proxy configuration at all while the popup still says Connected, and
+  // tailnet names quietly go out over the public internet.
+  //
+  // The source of tailtabIsTailnetHost is embedded above, comments and all, so
+  // a single em dash in one of its comments is enough to cause that. Keep every
+  // function whose source is embedded here in plain ASCII; this check is what
+  // catches it if someone does not.
+  if (!/^[\x00-\x7f]*$/.test(pac)) {
+    throw new Error("tailtab: the PAC script has a non-ASCII character in it, which Chromium rejects");
+  }
+  return pac;
 }
 
 // Export for the popup and for tests; the background scripts use the globals.
