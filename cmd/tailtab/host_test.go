@@ -19,6 +19,12 @@ type fakeBackend struct {
 	profileID string
 	browser   string
 	initErr   error
+	// duringInit runs inside Init, standing in for the node's IPN bus
+	// goroutine, which starts there and can push a status before Init returns.
+	duringInit func()
+	// duringUp runs inside SetWantRunning(true), standing in for a bus push
+	// once the host is past init.
+	duringUp  func()
 	wantUp    []bool
 	loggedOut bool
 	state     string
@@ -28,6 +34,12 @@ func (f *fakeBackend) Init(profileID, browser string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.profileID, f.browser = profileID, browser
+	during := f.duringInit
+	if during != nil {
+		f.mu.Unlock()
+		during()
+		f.mu.Lock()
+	}
 	if f.initErr != nil {
 		return f.initErr
 	}
@@ -45,8 +57,12 @@ func (f *fakeBackend) Status() *nm.Event {
 
 func (f *fakeBackend) SetWantRunning(up bool) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.wantUp = append(f.wantUp, up)
+	during := f.duringUp
+	f.mu.Unlock()
+	if up && during != nil {
+		during()
+	}
 	return nil
 }
 
@@ -62,6 +78,13 @@ func (f *fakeBackend) Close() error { return nil }
 // runLoop feeds framed messages through a host and returns the events written.
 func runLoop(t *testing.T, be backend, msgs ...string) []nm.Event {
 	t.Helper()
+	return runLoopWith(t, func(*host) backend { return be }, msgs...)
+}
+
+// runLoopWith is runLoop for a backend that needs the host itself, so a test
+// can push a status event from inside a backend call.
+func runLoopWith(t *testing.T, mk func(*host) backend, msgs ...string) []nm.Event {
+	t.Helper()
 	var in bytes.Buffer
 	for _, m := range msgs {
 		var hdr [4]byte
@@ -70,7 +93,8 @@ func runLoop(t *testing.T, be backend, msgs ...string) []nm.Event {
 		in.WriteString(m)
 	}
 	var out bytes.Buffer
-	h := &host{codec: nm.NewCodec(&in, &out), be: be}
+	h := &host{codec: nm.NewCodec(&in, &out)}
+	h.be = mk(h)
 	if err := h.loop(); !errors.Is(err, io.EOF) && h.fatal == nil {
 		t.Fatalf("loop ended with %v, want io.EOF", err)
 	}
@@ -130,13 +154,13 @@ func TestLoopSurvivesBadInput(t *testing.T) {
 	// serve the trailing status command.
 	be := &fakeBackend{}
 	events := runLoop(t, be,
-		`{"cmd":`,                                            // unframed JSON
-		`{"cmd":"nonsense"}`,                                 // unknown command
-		`{}`,                                                 // no cmd
-		`{"cmd":"init","profileID":"../x","browser":"zen"}`,  // path traversal
-		`{"cmd":"init","profileID":"`+goodID+`"}`,            // no browser
+		`{"cmd":`,            // unframed JSON
+		`{"cmd":"nonsense"}`, // unknown command
+		`{}`,                 // no cmd
+		`{"cmd":"init","profileID":"../x","browser":"zen"}`,          // path traversal
+		`{"cmd":"init","profileID":"`+goodID+`"}`,                    // no browser
 		`{"cmd":"init","profileID":"`+goodID+`","browser":"safari"}`, // unknown browser
-		`{"cmd":"up"}`,                                       // before init
+		`{"cmd":"up"}`, // before init
 		`{"cmd":"status"}`,
 	)
 	if len(events) != 8 {
@@ -204,5 +228,53 @@ func TestInitFailureIsFatal(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already in use") {
 		t.Errorf("loop returned %v, want the bind error", err)
+	}
+}
+
+// N4 (REVIEW.md). The node's bus goroutine starts inside Init and pushes a
+// status as soon as tsnet reports anything, which is before init has been
+// processed. That push used to reach the extension as a spurious
+// {"state":"NoState","proxyPort":0} racing the reply to init.
+func TestNoStatusEventEscapesBeforeInit(t *testing.T) {
+	var be *fakeBackend
+	events := runLoopWith(t, func(h *host) backend {
+		be = &fakeBackend{duringInit: func() {
+			// Two pushes from the bus, mid-Init.
+			h.pushStatus()
+			h.pushStatus()
+		}}
+		return be
+	}, `{"cmd":"init","profileID":"`+goodID+`","browser":"zen"}`)
+
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want 1 (the reply to init): %+v", len(events), events)
+	}
+	if events[0].Event != "status" || events[0].State != "NeedsLogin" {
+		t.Errorf("first event = %+v, want the initialised status", events[0])
+	}
+	for i, ev := range events {
+		if ev.State == "NoState" {
+			t.Errorf("event %d is the spurious pre-init status: %+v", i, ev)
+		}
+	}
+}
+
+// A push after init is through must still reach the extension: the suppression
+// above is a window, not a switch.
+func TestStatusIsPushedOnceInitIsThrough(t *testing.T) {
+	events := runLoopWith(t, func(h *host) backend {
+		return &fakeBackend{duringUp: func() { h.pushStatus() }}
+	},
+		`{"cmd":"init","profileID":"`+goodID+`","browser":"zen"}`,
+		`{"cmd":"up"}`,
+	)
+	// init's reply, the bus push from inside up, and up's own reply.
+	if len(events) != 3 {
+		t.Fatalf("got %d events, want 3: %+v", len(events), events)
+	}
+	for i, ev := range events {
+		if ev.Event != "status" || ev.State != "NeedsLogin" {
+			t.Errorf("event %d = %+v, want a status event from the backend", i, ev)
+		}
 	}
 }

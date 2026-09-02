@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -186,55 +189,101 @@ func TestOriginStyleRequestRejected(t *testing.T) {
 	}
 }
 
-func TestAllowTailnetHost(t *testing.T) {
-	allowed := []string{
-		"wiki",                     // MagicDNS short name
-		"server",                    //
-		"wiki.tail4d5e6f.ts.net",   // MagicDNS FQDN
-		"host.tail1a2b3c.ts.net",    // another tailnet
-		"WIKI.TAIL4D5E6F.TS.NET",   // case
-		"wiki.tail4d5e6f.ts.net.",  // trailing dot
-		"100.64.0.1",                // CGNAT, first
-		"100.101.102.103",           //
-		"100.127.255.255",           // CGNAT, last
-		"fd7a:115c:a1e0::1",         // Tailscale ULA
-		"[fd7a:115c:a1e0:ab12::1]",  // bracketed
-		"::ffff:100.64.0.1",         // v4-mapped CGNAT
+// hostCase is one row of testdata/tailnet-hosts.json, the decision table this
+// guard shares with extension/rules.js.
+type hostCase struct {
+	Host   string `json:"host"`
+	Suffix string `json:"suffix"`
+	Proxy  bool   `json:"proxy"`
+	Why    string `json:"why"`
+}
+
+func loadHostCases(t *testing.T) []hostCase {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "..", "testdata", "tailnet-hosts.json"))
+	if err != nil {
+		t.Fatalf("reading the shared host table: %v", err)
 	}
-	for _, h := range allowed {
-		if err := allowTailnetHost(h); err != nil {
-			t.Errorf("allowTailnetHost(%q) = %v, want nil", h, err)
+	var table struct {
+		Cases []hostCase `json:"cases"`
+	}
+	if err := json.Unmarshal(b, &table); err != nil {
+		t.Fatalf("parsing the shared host table: %v", err)
+	}
+	if len(table.Cases) < 40 {
+		t.Fatalf("the shared host table has only %d cases; it should not have shrunk", len(table.Cases))
+	}
+	return table.Cases
+}
+
+// TestAllowTailnetHost drives the guard from the same table extension/rules.js
+// is tested against. The two implementations are held together by this file:
+// a host the extension proxies but the guard refuses is a 403 the user sees.
+func TestAllowTailnetHost(t *testing.T) {
+	for _, c := range loadHostCases(t) {
+		err := allowTailnetHost(c.Host, c.Suffix)
+		if c.Proxy && err != nil {
+			t.Errorf("allowTailnetHost(%q, %q) = %v, want nil (%s)", c.Host, c.Suffix, err, c.Why)
 		}
+		if !c.Proxy {
+			if err == nil {
+				t.Errorf("allowTailnetHost(%q, %q) = nil, want a refusal (%s)", c.Host, c.Suffix, c.Why)
+			} else if !errors.Is(err, ErrNotTailnet) {
+				t.Errorf("allowTailnetHost(%q, %q) = %v, which does not wrap ErrNotTailnet", c.Host, c.Suffix, err)
+			}
+		}
+	}
+}
+
+// TestCustomMagicDNSSuffixIsRefusedUntilKnown is R1: a tailnet on a custom
+// domain is proxied by the extension, so the guard has to serve it — but only
+// once the node has actually reported that suffix, never on a name the browser
+// happened to send.
+func TestCustomMagicDNSSuffixIsRefusedUntilKnown(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "reached")
+	}))
+	defer backend.Close()
+
+	d := &recordingDialer{target: strings.TrimPrefix(backend.URL, "http://")}
+	p, err := start(d.dial)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer p.Close()
+
+	proxyURL, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", p.Port()))
+	c := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}, Timeout: 10 * time.Second}
+
+	if p.MagicDNSSuffix() != "" {
+		t.Fatalf("a fresh proxy already knows the suffix %q", p.MagicDNSSuffix())
+	}
+	resp, err := c.Get("http://host.my-tailnet.example.com/")
+	if err != nil {
+		t.Fatalf("GET through the proxy: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("before the suffix is known: status %d, want 403", resp.StatusCode)
 	}
 
-	refused := []string{
-		"",
-		"github.com",
-		"www.google.com",
-		"8.8.8.8",
-		"localhost",
-		"dev.localhost",
-		"127.0.0.1",
-		"::1",
-		"192.168.1.1",
-		"100.63.255.255",                    // just below CGNAT
-		"100.128.0.1",                       // just above CGNAT
-		"fd00::1",                           // a different ULA
-		"evil-ts.net",                       // not a subdomain of ts.net
-		"ts.net.attacker.com",               // suffix in the middle
-		"wiki.tail4d5e6f.ts.net.evil.com",  // suffix in the middle
-		"2130706433",                        // 127.0.0.1 as an integer
-		"0x7f000001",                        // 127.0.0.1 as hexadecimal
+	p.SetMagicDNSSuffix("my-tailnet.example.com")
+	resp, err = c.Get("http://host.my-tailnet.example.com/")
+	if err != nil {
+		t.Fatalf("GET through the proxy: %v", err)
 	}
-	for _, h := range refused {
-		err := allowTailnetHost(h)
-		if err == nil {
-			t.Errorf("allowTailnetHost(%q) = nil, want a refusal", h)
-			continue
-		}
-		if !errors.Is(err, ErrNotTailnet) {
-			t.Errorf("allowTailnetHost(%q) = %v, which does not wrap ErrNotTailnet", h, err)
-		}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || string(body) != "reached" {
+		t.Errorf("after the suffix is known: status %d body %q, want 200 \"reached\"", resp.StatusCode, body)
+	}
+
+	// The SOCKS path reads the same suffix, through the dialer guard.
+	if code := socks5Connect(t, p.Port(), "host.my-tailnet.example.com", 80); code != 0 {
+		t.Errorf("SOCKS5 CONNECT to the custom domain: reply code %d, want 0", code)
+	}
+	if code := socks5Connect(t, p.Port(), "other.example.com", 80); code == 0 {
+		t.Error("SOCKS5 CONNECT to a domain outside the tailnet succeeded")
 	}
 }
 

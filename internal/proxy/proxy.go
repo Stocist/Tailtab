@@ -20,6 +20,7 @@ import (
 	"net/netip"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"tailscale.com/net/proxymux"
@@ -42,15 +43,21 @@ var (
 
 // allowTailnetHost reports whether host is something the tailnet can serve.
 //
+// suffix is this node's own MagicDNS suffix, which is not under .ts.net when the
+// tailnet uses a custom domain. It is empty until the node reports one, and
+// until then only the .ts.net and single-label rules apply.
+//
 // Without this check the listener is a general-purpose open forward proxy, not
 // a tailnet proxy: UserDial falls back to the system resolver and then to a
 // plain dial for anything MagicDNS does not know, so any local process could
 // use it to reach the whole internet. The extension only ever sends tailnet
 // traffic here, so refusing the rest costs nothing.
 //
-// These are the rules in extension/rules.js, in Go. The two are kept in step by
-// hand; each is tested on both sides.
-func allowTailnetHost(host string) error {
+// These are the rules in extension/rules.js, in Go. Nothing keeps the two in
+// step automatically: they are held together by testdata/tailnet-hosts.json,
+// a shared table of decisions that both this function and rules.js are tested
+// against, so a change to one without the other fails a test.
+func allowTailnetHost(host, suffix string) error {
 	h := strings.ToLower(strings.TrimSuffix(host, "."))
 	h = strings.TrimSuffix(strings.TrimPrefix(h, "["), "]")
 	if h == "" {
@@ -68,6 +75,11 @@ func allowTailnetHost(host string) error {
 	}
 	if strings.HasSuffix(h, ".ts.net") {
 		return nil
+	}
+	if d := strings.ToLower(strings.Trim(suffix, ".")); d != "" {
+		if h == d || strings.HasSuffix(h, "."+d) {
+			return nil
+		}
 	}
 	if strings.Contains(h, ".") {
 		return fmt.Errorf("%w: %s is not a MagicDNS name", ErrNotTailnet, h)
@@ -95,9 +107,9 @@ func hostOnly(hostport string) string {
 // guard refuses non-tailnet destinations before they reach dial. It wraps every
 // dialer the proxy uses, so the SOCKS5 path is covered too — SOCKS has no
 // handler in front of it to check first.
-func guard(dial DialFunc) DialFunc {
+func (s *Server) guard(dial DialFunc) DialFunc {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		if err := allowTailnetHost(hostOnly(addr)); err != nil {
+		if err := allowTailnetHost(hostOnly(addr), s.MagicDNSSuffix()); err != nil {
 			return nil, err
 		}
 		return dial(ctx, network, addr)
@@ -115,11 +127,11 @@ func guard(dial DialFunc) DialFunc {
 // The address is passed through as a hostname. MagicDNS resolution happens
 // inside UserDial, for both short names ("wiki") and FQDNs; resolving here
 // would bypass the tailnet resolver entirely.
-func dialTailnet(ts *tsnet.Server) DialFunc {
+func dialTailnet(ts *tsnet.Server, suffix func() string) DialFunc {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		// Also checked in guard, which wraps this. Repeated here because this
 		// is the function that reaches the network: it has to be safe alone.
-		if err := allowTailnetHost(hostOnly(addr)); err != nil {
+		if err := allowTailnetHost(hostOnly(addr), suffix()); err != nil {
 			return nil, err
 		}
 		sys := ts.Sys()
@@ -140,6 +152,34 @@ type Server struct {
 	dial DialFunc
 	ln   net.Listener
 	http *http.Server
+
+	mu sync.Mutex
+	// suffix is the node's MagicDNS suffix, pushed in from the status stream.
+	// It is read on every dial, from whichever goroutine is serving, and
+	// written from the message loop, so it lives under the mutex.
+	suffix string
+}
+
+// SetMagicDNSSuffix tells the proxy the node's own MagicDNS suffix, so a
+// tailnet with a custom domain is served rather than refused. The host calls it
+// on every status refresh; a tailnet rename therefore reaches the guard.
+func (s *Server) SetMagicDNSSuffix(suffix string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.suffix = suffix
+}
+
+// MagicDNSSuffix returns the suffix last pushed in, or "" if none is known.
+func (s *Server) MagicDNSSuffix() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.suffix
 }
 
 // Start binds a proxy for ts on 127.0.0.1 and serves it in the background. The
@@ -147,15 +187,29 @@ type Server struct {
 // browser at a stable port once; connections simply fail until the node is
 // running.
 func Start(ts *tsnet.Server) (*Server, error) {
-	return start(dialTailnet(ts))
+	s := &Server{}
+	if err := s.serve(dialTailnet(ts, s.MagicDNSSuffix)); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
+// start builds a server around an arbitrary dialer. Tests use it; Start is the
+// only caller in the program.
 func start(dial DialFunc) (*Server, error) {
+	s := &Server{}
+	if err := s.serve(dial); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *Server) serve(dial DialFunc) error {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return nil, fmt.Errorf("binding the loopback proxy: %w", err)
+		return fmt.Errorf("binding the loopback proxy: %w", err)
 	}
-	s := &Server{dial: guard(dial), ln: ln}
+	s.dial, s.ln = s.guard(dial), ln
 
 	socksLn, httpLn := proxymux.SplitSOCKSAndHTTP(ln)
 	s.http = &http.Server{
@@ -182,7 +236,7 @@ func start(dial DialFunc) (*Server, error) {
 			log.Printf("SOCKS5 proxy stopped: %v", err)
 		}
 	}()
-	return s, nil
+	return nil
 }
 
 // Port returns the bound TCP port.
@@ -245,7 +299,7 @@ func (s *Server) handler() http.Handler {
 			http.Error(w, "tailtab: this is a proxy; use an absolute URL or CONNECT", http.StatusBadRequest)
 			return
 		}
-		if err := allowTailnetHost(r.URL.Hostname()); err != nil {
+		if err := allowTailnetHost(r.URL.Hostname(), s.MagicDNSSuffix()); err != nil {
 			http.Error(w, "tailtab: "+err.Error(), http.StatusForbidden)
 			return
 		}
@@ -255,7 +309,7 @@ func (s *Server) handler() http.Handler {
 
 // serveConnect tunnels a CONNECT request to the tailnet.
 func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request) {
-	if err := allowTailnetHost(hostOnly(r.RequestURI)); err != nil {
+	if err := allowTailnetHost(hostOnly(r.RequestURI), s.MagicDNSSuffix()); err != nil {
 		http.Error(w, "tailtab: "+err.Error(), http.StatusForbidden)
 		return
 	}

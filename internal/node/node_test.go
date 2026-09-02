@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"net/netip"
 	"slices"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"tailscale.com/health"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/tailcfg"
 	"tailscale.com/tsconst"
 )
 
@@ -145,6 +147,61 @@ func TestApplyIPNStatusUsesTheMagicDNSName(t *testing.T) {
 	}
 	if st.State != "Running" {
 		t.Errorf("State = %q, want Running", st.State)
+	}
+}
+
+// N3 (REVIEW.md). A tailnet rename, or a netmap landing after the node is
+// already Running, changes this node's own tailcfg.Node without a state
+// transition. Nothing else re-reads the status, so the popup — and the proxy's
+// guard, which is handed the suffix from here — would keep the old values for
+// the life of the process.
+func TestSelfChangeRefreshesTheStatus(t *testing.T) {
+	n, _, seen := newTestNode(t)
+	ctx := context.Background()
+
+	reads := 0
+	n.readStatus = func(context.Context) (*ipnstate.Status, error) {
+		reads++
+		return &ipnstate.Status{
+			BackendState:   ipn.Running.String(),
+			CurrentTailnet: &ipnstate.TailnetStatus{Name: "display name", MagicDNSSuffix: "my-tailnet.example.com"},
+			Self: &ipnstate.PeerStatus{
+				DNSName:      "laptop-tailtab-zen.my-tailnet.example.com.",
+				TailscaleIPs: []netip.Addr{netip.MustParseAddr("100.64.0.9")},
+			},
+		}, nil
+	}
+
+	n.apply(ctx, ipn.Notify{SelfChange: &tailcfg.Node{StableID: "nodeid-1"}})
+	if reads != 1 {
+		t.Fatalf("SelfChange caused %d status reads, want 1", reads)
+	}
+	st := n.Status()
+	if st.Tailnet != "my-tailnet.example.com" {
+		t.Errorf("Tailnet = %q, want the suffix from the refreshed status", st.Tailnet)
+	}
+	if st.SelfIP != "100.64.0.9" {
+		t.Errorf("SelfIP = %q, want 100.64.0.9", st.SelfIP)
+	}
+	if st.Hostname != "laptop-tailtab-zen" {
+		t.Errorf("Hostname = %q, want laptop-tailtab-zen", st.Hostname)
+	}
+	// It has to reach the extension, not just the cached status.
+	if len(*seen) == 0 {
+		t.Fatal("the refreshed status was never pushed to the extension")
+	}
+	if last := (*seen)[len(*seen)-1]; last.Tailnet != "my-tailnet.example.com" {
+		t.Errorf("the extension was pushed Tailnet %q", last.Tailnet)
+	}
+
+	// A notification that changes nothing must not push again.
+	pushes := len(*seen)
+	n.apply(ctx, ipn.Notify{SelfChange: &tailcfg.Node{StableID: "nodeid-1"}})
+	if reads != 2 {
+		t.Errorf("the second SelfChange caused %d status reads in total, want 2", reads)
+	}
+	if len(*seen) != pushes {
+		t.Errorf("an unchanged status was pushed to the extension again")
 	}
 }
 

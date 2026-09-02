@@ -80,7 +80,15 @@ Each browser profile gets its own node, named `<your-mac>-tailtab-zen` or
 when it is a single-label MagicDNS name (`wiki`), ends in `.ts.net` or your
 tailnet's MagicDNS suffix, or is an address in `100.64.0.0/10` or
 `fd7a:115c:a1e0::/48`. Everything else is DIRECT, which is why ordinary
-browsing keeps working if the host process dies.
+browsing keeps working if the host process dies. The same rule exists twice —
+in `extension/rules.js` and as the host's own guard in `internal/proxy` — and
+`testdata/tailnet-hosts.json` is the table both are tested against, so the two
+cannot drift apart unnoticed.
+
+When the host process dies, Edge's PAC script is cleared rather than left in
+place. Both are safe for ordinary browsing, but a PAC pointing at a dead port
+makes tailnet requests hang until the browser gives up, where no PAC makes them
+fail at once. It is reinstalled as soon as the host is back on its new port.
 
 ## Logging
 
@@ -99,8 +107,9 @@ else.
   at all, so loopback is the boundary. What a caller can reach through it is
   limited instead: the listener only dials MagicDNS names, `*.ts.net`, and
   addresses in `100.64.0.0/10` or `fd7a:115c:a1e0::/48`, and refuses everything
-  else with 403 (HTTP) or a SOCKS failure reply. A tailnet with a custom
-  MagicDNS domain is not covered by that list and would be refused.
+  else with 403 (HTTP) or a SOCKS failure reply. A tailnet on a custom MagicDNS
+  domain is covered too: the host learns its own suffix from the node's status
+  and allows it from then on.
 - No exit nodes, no peer list, no store packaging, placeholder icons.
 - A temporary add-on in Zen has to be re-loaded after every restart.
 - Firefox private windows are only covered if you enable *Run in Private

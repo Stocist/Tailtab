@@ -45,6 +45,13 @@ func (b *nodeBackend) Status() *nm.Event {
 	ev.State = st.State
 	ev.AuthURL = st.AuthURL
 	ev.Tailnet = st.Tailnet
+	// The proxy's guard has to know this node's own MagicDNS suffix, which is
+	// not under .ts.net when the tailnet uses a custom domain (R1). Status
+	// carries the suffix, not the tailnet's display name: node.applyIPNStatus
+	// reads ipnstate.Status.CurrentTailnet.MagicDNSSuffix and falls back to the
+	// top-level MagicDNSSuffix. Pushing it here means a rename reaches the
+	// guard as soon as it reaches the popup.
+	b.proxy.SetMagicDNSSuffix(st.Tailnet)
 	ev.Hostname = st.Hostname
 	ev.SelfIP = st.SelfIP
 	ev.Error = st.Error
@@ -84,6 +91,7 @@ type host struct {
 	mu        sync.Mutex
 	be        backend
 	initTried bool  // an init command has been accepted
+	initDone  bool  // that init has been processed, either way
 	initOK    bool  // that init succeeded, so the node exists
 	fatal     error // set when the host cannot go on, e.g. the node would not start
 	proxyPort int
@@ -92,7 +100,7 @@ type host struct {
 // runHost runs the native-messaging loop until stdin closes, then exits.
 func runHost() {
 	h := &host{codec: nm.NewCodec(os.Stdin, os.Stdout)}
-	h.be = &nodeBackend{h: h, node: node.New(func(node.Status) { h.sendStatus() })}
+	h.be = &nodeBackend{h: h, node: node.New(func(node.Status) { h.pushStatus() })}
 
 	err := h.loop()
 	h.close()
@@ -189,7 +197,15 @@ func (h *host) handleInit(req *nm.Request) error {
 	if be == nil {
 		return errors.New("no backend configured")
 	}
-	defer h.sendStatus()
+	// Whatever happens below, init has now been processed: the first status
+	// event the extension sees is this one, and pushes from the node's bus
+	// goroutine stop being suppressed (N4).
+	defer func() {
+		h.mu.Lock()
+		h.initDone = true
+		h.mu.Unlock()
+		h.sendStatus()
+	}()
 	if err := be.Init(req.ProfileID, req.Browser); err != nil {
 		// Without a node this process has nothing to offer. Report it and let
 		// the loop exit non-zero; the extension reconnects with backoff.
@@ -202,6 +218,21 @@ func (h *host) handleInit(req *nm.Request) error {
 	h.initOK = true
 	h.mu.Unlock()
 	return nil
+}
+
+// pushStatus is the node's onChange callback. It runs on the IPN bus
+// goroutine, which starts inside Init and can therefore fire while init is
+// still being handled. Until init has been processed the push is dropped: the
+// extension's first status event has to be the reply to its init, not a
+// spurious {"state":"NoState","proxyPort":0} racing it (N4).
+func (h *host) pushStatus() {
+	h.mu.Lock()
+	ready := h.initDone
+	h.mu.Unlock()
+	if !ready {
+		return
+	}
+	h.sendStatus()
 }
 
 func (h *host) sendStatus() {

@@ -491,6 +491,50 @@ test("a running node shows its details and no warnings", () => {
   eq(ui.els.disconnect.hidden, false, "Disconnect offered");
 });
 
+// The split-tunnel rule exists twice: here, and as allowTailnetHost in
+// internal/proxy. testdata/tailnet-hosts.json is the table both are tested
+// against, so the pair cannot drift into the failure R1 describes — the
+// extension proxying a host the listener then answers 403 to.
+test("rules.js matches the shared host table", () => {
+  const table = JSON.parse(fs.readFileSync(path.resolve(SRC, "..", "testdata", "tailnet-hosts.json"), "utf8"));
+  const rules = require(path.join(SRC, "rules.js"));
+  if (!table.cases || table.cases.length < 40) {
+    throw new Error("the shared host table has shrunk: " + (table.cases || []).length + " cases");
+  }
+  const wrong = [];
+  for (const c of table.cases) {
+    const got = rules.tailtabIsTailnetHost(c.host, c.suffix);
+    if (got !== c.proxy) {
+      wrong.push(JSON.stringify(c.host) + " with suffix " + JSON.stringify(c.suffix) +
+        ": rules.js says " + got + ", the table says " + c.proxy + " (" + c.why + ")");
+    }
+  }
+  if (wrong.length) throw new Error(wrong.length + " host(s) disagree:\n     " + wrong.join("\n     "));
+});
+
+// R1 in the browser: a tailnet on a custom domain has to reach the PAC too,
+// and only once the node has reported that suffix.
+test("the PAC routes a custom MagicDNS domain once the suffix is known", () => {
+  const rules = require(path.join(SRC, "rules.js"));
+  const pac = rules.tailtabBuildPac(64378, "my-tailnet.example.com");
+  const decide = new Function("url", "host", pac + "\nreturn FindProxyForURL(url, host);");
+
+  const proxied = decide("http://host.my-tailnet.example.com/", "host.my-tailnet.example.com");
+  if (proxied === "DIRECT") throw new Error("the custom domain went DIRECT");
+  if (proxied.indexOf("127.0.0.1:64378") === -1) {
+    throw new Error("the custom domain was routed to " + proxied);
+  }
+  // No fallback: a tailnet name must fail rather than leak onto the internet.
+  if (proxied.indexOf("DIRECT") !== -1) throw new Error("the PAC offers a DIRECT fallback: " + proxied);
+
+  eq(decide("https://github.com/", "github.com"), "DIRECT", "the public internet");
+  // Unknown suffix, same host: DIRECT, because nothing says it is ours.
+  const blind = rules.tailtabBuildPac(64378, "");
+  const decideBlind = new Function("url", "host", blind + "\nreturn FindProxyForURL(url, host);");
+  eq(decideBlind("http://host.my-tailnet.example.com/", "host.my-tailnet.example.com"), "DIRECT",
+    "a custom domain before the suffix is known");
+});
+
 (async () => {
   let failed = 0;
   for (const t of tests) {

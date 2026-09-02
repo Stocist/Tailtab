@@ -11,12 +11,23 @@
 //
 // It must stay self-contained: its source is stringified into a PAC script,
 // where nothing else in this file exists.
+//
+// tailnetDomain is this node's own MagicDNS suffix, which is not under .ts.net
+// when the tailnet uses a custom domain. The host's guard (internal/proxy,
+// allowTailnetHost) must agree with this function on every name: the two are
+// held together by testdata/tailnet-hosts.json, which both are tested against.
 function tailtabIsTailnetHost(host, tailnetDomain) {
   if (!host) return false;
   var h = String(host).toLowerCase();
   if (h.charAt(h.length - 1) === ".") h = h.slice(0, -1);
   if (h.charAt(0) === "[" && h.charAt(h.length - 1) === "]") h = h.slice(1, -1);
   if (h === "") return false;
+
+  // An IPv4-mapped IPv6 address is the IPv4 address it wraps: ::ffff:100.64.0.1
+  // is 100.64.0.1. Unwrap it before deciding anything, which is what the host's
+  // guard does with netip's Unmap; without this the two disagree.
+  var mapped = h.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (mapped) h = mapped[1];
 
   // Never proxy the loopback: the proxy itself lives there.
   if (h === "localhost" || h === "::1" || h.indexOf("127.") === 0) return false;

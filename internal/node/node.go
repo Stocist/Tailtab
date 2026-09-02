@@ -76,6 +76,9 @@ type Node struct {
 	// startLogin is lc.StartLoginInteractive once the node is up. It is a
 	// field so tests can drive the login path without a control server.
 	startLogin func(context.Context) error
+	// readStatus is lc.StatusWithoutPeers once the node is up, for the same
+	// reason: refresh has to be observable in a test with no local API.
+	readStatus func(context.Context) (*ipnstate.Status, error)
 	started    bool
 	st         Status
 }
@@ -169,6 +172,7 @@ func (n *Node) Start(profileID, browser string) error {
 	n.lc = lc
 	n.cancel = cancel
 	n.startLogin = lc.StartLoginInteractive
+	n.readStatus = lc.StatusWithoutPeers
 	n.mu.Unlock()
 
 	// NotifyInitialStatus is what carries the tailnet name and self IP:
@@ -265,7 +269,13 @@ func (n *Node) apply(ctx context.Context, notify ipn.Notify) {
 
 	// A state change can also change the tailnet name or the self IP (they are
 	// only known once the node is up), so re-read the authoritative status.
-	if notify.State != nil {
+	//
+	// SelfChange is the same event without a state transition: the node's own
+	// tailcfg.Node changed, which is how a tailnet rename, a new MagicDNS
+	// suffix or a fresh address arrives once the node is already Running. The
+	// netmap itself is nil here (G2), so the only way to see what changed is
+	// to re-read the status (N3).
+	if notify.State != nil || notify.SelfChange != nil {
 		n.refresh(ctx)
 	}
 
@@ -283,14 +293,14 @@ func (n *Node) apply(ctx context.Context, notify ipn.Notify) {
 // refresh re-reads the node status from the local API.
 func (n *Node) refresh(ctx context.Context) {
 	n.mu.Lock()
-	lc := n.lc
+	read := n.readStatus
 	n.mu.Unlock()
-	if lc == nil {
+	if read == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	s, err := lc.StatusWithoutPeers(ctx)
+	s, err := read(ctx)
 	if err != nil {
 		log.Printf("reading node status: %v", err)
 		return

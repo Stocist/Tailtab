@@ -93,9 +93,17 @@ async function applyProxy() {
   );
 }
 
-// clearProxy hands the setting back. It runs on any transition out of Running.
-// Ordinary browsing is unaffected either way: the PAC only ever routes tailnet
-// hosts, so leaving it installed could not break anything.
+// clearProxy hands the setting back. It runs on any transition out of Running,
+// which includes the host process dying: onDisconnect reports Disconnected,
+// and that is a transition out of Running like any other.
+//
+// Clearing on a crash is deliberate, and is the reverse of the first cut.
+// Ordinary browsing is safe either way — the PAC only ever routes tailnet
+// hosts, so leaving it installed could not break github.com — but tailnet
+// requests are not: a PAC still pointing at a dead port makes every one of them
+// hang until Chromium gives up on the connection, while no PAC at all makes
+// them fail immediately. Failing fast is the better answer, and the setting is
+// reinstalled as soon as the host is back with its new port and token.
 async function clearProxy() {
   if (USE_ON_REQUEST) return;
   await new Promise((resolve) => chrome.proxy.settings.clear({ scope: "regular" }, resolve));
