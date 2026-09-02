@@ -659,7 +659,7 @@ test("a running node shows its details and no warnings", () => {
   eq(ui.els.tailnet.textContent, "tail4d5e6f.ts.net", "tailnet");
   eq(ui.els.warnings.hidden, true, "warnings hidden");
   eq(ui.els.login.hidden, true, "Log in hidden while running");
-  eq(ui.els.disconnect.hidden, false, "Disconnect offered");
+  eq(ui.els.toggle.className, "on", "the header toggle is on while Running");
 });
 
 // The split-tunnel rule exists twice: here, and as allowTailnetHost in

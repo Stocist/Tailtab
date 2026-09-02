@@ -96,7 +96,9 @@ function renderAccount(msg, st, running) {
   }
   setText("accountname", name);
   setText("accounttailnet", tailnet);
-  setText("avatar", (name && /^[a-z0-9]/i.test(name) ? name[0] : "t").toUpperCase());
+  // The avatar letter is the account's, and only the account's: a placeholder
+  // like "Not logged in" gets the neutral mark.
+  setText("avatar", active && active.name && /^[a-z0-9]/i.test(active.name) ? active.name[0].toUpperCase() : "t");
   el("account").disabled = !msg.connected;
 
   // The menu: every held account, then "Add account…".
@@ -110,6 +112,7 @@ function renderAccount(msg, st, running) {
     const b = document.createElement("b");
     b.textContent = account.name || "(unnamed)";
     const t = document.createElement("span");
+    t.className = "tn";
     t.textContent = account.tailnet || "";
     who.appendChild(b);
     who.appendChild(t);
@@ -336,7 +339,9 @@ function render(msg) {
   el("connect").hidden = running || !!st.authURL || !msg.connected;
   el("connect").disabled = awaitingLogin;
   el("connect").textContent = awaitingLogin ? "Requesting…" : "Connect";
-  el("disconnect").hidden = !running;
+  // The header toggle is the disconnect control; the button stays for
+  // keyboard users but out of the way.
+  el("disconnect").hidden = true;
   el("logout").hidden = !msg.connected || (!running && state !== "Stopped");
 
   renderExitNodes(msg, st, running);
