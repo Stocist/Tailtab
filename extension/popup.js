@@ -34,6 +34,8 @@ let openedLogin = "";
 const MAX_MACHINES = 8;
 // How many machines to show before anything is typed.
 const PREVIEW_MACHINES = 3;
+// Set by "View all": every machine is listed, scrolling if need be.
+let showAllMachines = false;
 
 // A state the node reports that is worth explaining.
 const HINTS = {
@@ -262,6 +264,8 @@ function renderMachines(st, running) {
     hits = peers.slice().sort((a, b) => (b.online ? 1 : 0) - (a.online ? 1 : 0));
     limit = PREVIEW_MACHINES;
   }
+  if (showAllMachines) limit = Infinity;
+  list.className = showAllMachines ? "all" : "";
   for (const peer of hits.slice(0, limit)) {
     const li = document.createElement("li");
     const name = document.createElement("button");
@@ -281,8 +285,31 @@ function renderMachines(st, running) {
   if (hits.length > limit) {
     const more = document.createElement("li");
     more.className = "more";
-    more.textContent = hits.length - limit + " more · type to filter";
+    const count = document.createElement("span");
+    count.textContent = hits.length - limit + " more · type to filter";
+    const all = document.createElement("button");
+    all.textContent = "View all";
+    all.addEventListener("click", () => {
+      showAllMachines = true;
+      renderMachines(st, running);
+    });
+    more.appendChild(count);
+    more.appendChild(all);
     list.appendChild(more);
+  } else if (showAllMachines && hits.length > PREVIEW_MACHINES && !q) {
+    const less = document.createElement("li");
+    less.className = "more";
+    const count = document.createElement("span");
+    count.textContent = hits.length + " machines";
+    const fewer = document.createElement("button");
+    fewer.textContent = "Show fewer";
+    fewer.addEventListener("click", () => {
+      showAllMachines = false;
+      renderMachines(st, running);
+    });
+    less.appendChild(count);
+    less.appendChild(fewer);
+    list.appendChild(less);
   }
   if (hits.length === 0) {
     const none = document.createElement("li");

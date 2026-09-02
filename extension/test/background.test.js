@@ -1449,6 +1449,14 @@ test("more machines than the preview shows are counted, not listed", () => {
   eq(rows.length, 4, "three machines and the count line");
   eq(rows[3].name, "18 more · type to filter", "the count line");
   eq(rows.slice(0, 3).every((r) => r.className === "name"), true, "online machines come first");
+
+  // "View all" lists everything, and "Show fewer" folds it back.
+  ui.els.machines.children[3].children[1].listeners.click();
+  const all = ui.machineRows();
+  eq(all.length, 22, "21 machines and the fold line");
+  eq(all[21].name, "21 machines", "the fold line");
+  ui.els.machines.children[21].children[1].listeners.click();
+  eq(ui.machineRows().length, 4, "folded back to the preview");
 });
 
 test("the header shows the display name and picture when the account has them", () => {
