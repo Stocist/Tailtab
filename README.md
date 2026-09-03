@@ -1,7 +1,10 @@
+<p align="center">
+  <img src="docs/logo.svg" width="96" alt="Tailtab">
+</p>
 <h1 align="center">Tailtab</h1>
 
 <p align="center">
-  A Tailscale node for each browser profile. No system-wide VPN, no root, and two profiles can sit on two different tailnets at once.
+  A Tailscale node for each browser profile. No system-wide VPN, no root, and different profiles can sit on completely different tailnets at the same time.
 </p>
 
 <p align="center">
@@ -21,12 +24,17 @@
 
 ## What it does
 
-- **One node per browser profile.** Each profile becomes its own machine on the tailnet, named `<host>-tailtab-<browser>`, with its own key and its own state. Nothing else on the computer is touched.
-- **Split tunnel by default.** Only tailnet destinations go through Tailtab: MagicDNS names, `*.ts.net`, your tailnet's own suffix, and the `100.64.0.0/10` / `fd7a:115c:a1e0::/48` ranges. Everything else is direct, so ordinary browsing never depends on Tailtab being up.
-- **Exit nodes, per profile.** Pick an exit node and *this profile's* whole web traffic leaves through it; the rest of the machine carries on as before. An exit node that goes offline blocks browsing rather than leaking it.
-- **Several accounts, one click apart.** Tailscale login profiles inside the node: add a second account, switch between tailnets from the header, no re-login.
-- **A proxy only this profile can use.** The loopback listener takes a per-process credential and refuses non-tailnet destinations, so no other program on the machine can borrow the profile's identity.
-- **Honest status.** The popup separates "the node is up" from "the browser is routing through it", and says so when they differ.
+- **One node per browser profile.** Every profile gets its own machine on the tailnet, named `<host>-tailtab-<browser>`, with its own key and state. Nothing else on the computer gets touched.
+
+- **Split tunnel by default.** Only tailnet traffic goes through Tailtab. That includes MagicDNS names, `*.ts.net`, your tailnet's own suffix, and the `100.64.0.0/10` / `fd7a:115c:a1e0::/48` ranges. Everything else goes out normally, so regular browsing does not depend on Tailtab being connected.
+
+- **Exit nodes per profile.** You can pick an exit node for one browser profile and send that profile's web traffic through it while the rest of the machine carries on normally. If that exit node disappears, Tailtab blocks the traffic instead of silently letting it leak out directly.
+
+- **Multiple Tailscale accounts without constantly logging back in.** Add another account, switch tailnets from the header, and each one keeps its own node key and state.
+
+- **A proxy only that profile can use.** The loopback proxy uses a per-process credential and rejects anything that should not be going through the tailnet. Other programs on the machine cannot just borrow the browser profile's Tailscale identity.
+
+- **Status that actually tells you what is happening.** The popup treats "the node is connected" and "the browser is actually routing through it" as two separate things, because they are. If they do not match, it tells you.
 
 ## How it works
 
@@ -39,11 +47,17 @@ flowchart LR
   H -->|WireGuard| T((Tailnet))
 ```
 
-The extension speaks to a small Go host over native messaging. The host embeds `tsnet`, so it *is* the node, and it runs an authenticated HTTP/SOCKS5 proxy on loopback. Chromium is pointed at it with a PAC script; Firefox decides per request. Both use the same rule table, and a shared fixture keeps the two in step. Details in [docs/architecture.md](docs/architecture.md).
+The basic setup is pretty simple.
+
+The extension talks to a small Go host through native messaging. That host embeds `tsnet`, which means the host itself becomes the Tailscale node. It then exposes an authenticated HTTP/SOCKS5 proxy over loopback for the browser to use.
+
+Chromium gets pointed at the proxy through a PAC script. Firefox decides whether to proxy each request itself. Both browsers use the same routing rules, with a shared fixture there to make sure the implementations do not slowly drift apart.
+
+More detail is in [docs/architecture.md](docs/architecture.md).
 
 ## Quick start
 
-Requirements: macOS, Go 1.27, Node 22, and Microsoft Edge or Zen.
+You will need macOS, Go 1.27, Node 22, and either Microsoft Edge or Zen.
 
 ```sh
 git clone https://github.com/Stocist/Tailtab.git && cd Tailtab
@@ -51,25 +65,48 @@ git clone https://github.com/Stocist/Tailtab.git && cd Tailtab
 bin/tailtab install --edge-id kejfineblfbjfolkgjkancapnpknomod --gecko-id tailtab@stocist.dev
 ```
 
-`build.sh` produces the host binary and one unpacked extension per browser. `install` writes the native-messaging manifests for Edge, Zen/Firefox and Chrome, pointing at that binary; run it again if you move the checkout, and `bin/tailtab uninstall` removes exactly those files.
+`build.sh` builds the host binary and an unpacked extension for each browser.
+
+`install` then writes the native-messaging manifests for Edge, Zen/Firefox and Chrome, pointing them at that binary.
+
+If you move the repo afterwards, just run `install` again. `bin/tailtab uninstall` removes the files Tailtab added.
 
 <details>
 <summary><b>Load the extension in Edge</b></summary>
 
-1. `edge://extensions` → turn on **Developer mode** → **Load unpacked** → pick `extension/dist/chromium/`.
-2. Confirm the ID reads `kejfineblfbjfolkgjkancapnpknomod` (it is fixed by the key in the manifest).
-3. After a rebuild, reload the extension from that page. Edge keeps the old background worker across browser restarts; the popup shows a banner when it is out of date.
+1. Open `edge://extensions`.
+2. Turn on **Developer mode**.
+3. Click **Load unpacked** and select `extension/dist/chromium/`.
+4. Check that the extension ID is `kejfineblfbjfolkgjkancapnpknomod`. This is fixed by the key in the manifest.
+5. After rebuilding Tailtab, reload the extension from this page.
+
+Edge likes to keep the old background worker around even after the browser restarts, so the popup shows a warning if the extension and host are out of sync.
+
 </details>
 
 <details>
 <summary><b>Load the extension in Zen / Firefox</b></summary>
 
-1. `about:debugging#/runtime/this-firefox` → **Load Temporary Add-on…** → pick `extension/dist/firefox/manifest.json`.
-2. For private windows, turn on **Run in Private Windows** for Tailtab in `about:addons`.
-3. A temporary add-on is removed when the browser restarts; load it again afterwards. A signed build is on the roadmap.
+1. Open `about:debugging#/runtime/this-firefox`.
+2. Click **Load Temporary Add-on…**.
+3. Select `extension/dist/firefox/manifest.json`.
+4. If you want Tailtab in private windows, enable **Run in Private Windows** from `about:addons`.
+
+Firefox removes temporary extensions when the browser closes, so you will need to load it again after a restart for now. A signed build is on the roadmap.
+
 </details>
 
-Then open the popup and click **Connect**. The Tailscale login page opens in a tab; approve the node and the popup turns to *Connected* with the tailnet, the device name and its address. `http://wiki/` reaches a machine called `wiki` on the tailnet; `https://github.com` goes direct.
+Once that is done, open the popup and hit **Connect**.
+
+Tailtab opens the normal Tailscale login page in a tab. Approve the node and the popup should switch to *Connected*, showing the tailnet, device name and assigned address.
+
+From there:
+
+`http://wiki/` can reach a machine called `wiki` on your tailnet.
+
+`https://github.com` still goes straight to the internet.
+
+That is basically the idea.
 
 ## A closer look
 
@@ -81,31 +118,50 @@ Then open the popup and click **Connect**. The Tailscale login page opens in a t
   <img src="docs/screenshots/search-dark.png" width="240" alt="Machine search">
 </p>
 
-- **Accounts** ([docs/accounts.md](docs/accounts.md)) — the header is the switcher. *Add account…* opens a login for a new Tailscale account alongside the existing one; each keeps its own node key and tailnet.
-- **Exit nodes** ([docs/exit-nodes.md](docs/exit-nodes.md)) — the picker lists every exit node the tailnet offers. While one is selected the rule flips: public traffic goes through it, loopback and private ranges stay local.
-- **Machines** — the first few are listed; type to filter by name or address, click a name to open it, click the address to copy it.
+- **Accounts** ([docs/accounts.md](docs/accounts.md))  
+  The header doubles as the account switcher. *Add account…* starts a login for another Tailscale account without replacing the current one. Each account keeps its own node key, state and tailnet.
+
+- **Exit nodes** ([docs/exit-nodes.md](docs/exit-nodes.md))  
+  The picker shows the exit nodes available on the current tailnet. Once one is selected, public traffic from that browser profile goes through it while loopback and private ranges stay local.
+
+- **Machines**  
+  Tailtab shows the first few machines on the tailnet and lets you search by name or address. Click a machine name to open it, or click its address to copy it.
 
 ## Security
 
-The full write-up is in [docs/security.md](docs/security.md). In short:
+There is a more complete write-up in [docs/security.md](docs/security.md), but the important bits are:
 
-- The proxy requires `tailtab:<token>`, where the token is 32 random bytes generated by the host on every start and held only in the extension's memory. Any other local program gets `407`.
-- The host refuses destinations the tailnet does not serve (or, with an exit node active, private address space), so it is a tailnet proxy, not an open forward proxy.
-- Edge needs `webRequest`, `webRequestAuthProvider` and `<all_urls>` to answer the proxy's challenge; the handler answers only its own loopback challenger and reads no request content. Zen needs none of that.
-- `tsnet` uploads its logs to Tailscale and there is no supported switch to stop it; Tailtab does not work around this.
+- The proxy requires `tailtab:<token>`. The token is 32 random bytes generated by the host every time it starts and is only kept in the extension's memory. Anything else trying to use the proxy gets `407`.
+
+- The host rejects destinations the tailnet cannot serve. If an exit node is active, private address space is still kept local. The idea is for this to stay a Tailscale-specific proxy rather than becoming a generic forward proxy sitting on localhost.
+
+- Edge needs `webRequest`, `webRequestAuthProvider` and `<all_urls>` so it can answer the proxy authentication challenge. The handler only answers Tailtab's own loopback proxy and does not read the contents of requests. Zen does not need these permissions.
+
+- `tsnet` uploads its own logs to Tailscale and there is currently no supported switch for disabling that. Tailtab does not try to hack around it.
 
 ## Status
 
-Tailtab is an experiment that works well enough for daily use by its author on macOS with Edge and Zen. It is not in any extension store yet.
+Tailtab is still experimental, but it is at the point where I can actually daily drive it on macOS with Edge and Zen.
 
-- [x] Per-profile node, split tunnel, authenticated proxy
-- [x] Exit nodes, account switching, machine search
-- [ ] Signed Zen build (AMO) and a release with prebuilt binaries
+It is not in an extension store yet, so setup is still manual.
+
+- [x] Per-profile node
+- [x] Split tunnelling
+- [x] Authenticated local proxy
+- [x] Exit nodes
+- [x] Account switching
+- [x] Machine search
+- [ ] Signed Zen build through AMO
+- [ ] Release builds with prebuilt binaries
 - [ ] Icons
-- [ ] Linux and Windows hosts
-- [ ] Chrome and Firefox proper (should work; untested)
+- [ ] Linux host
+- [ ] Windows host
+- [ ] Proper Chrome testing
+- [ ] Proper Firefox testing
 
-Known limits are listed in [docs/security.md#known-gaps](docs/security.md#known-gaps).
+Chrome and Firefox should work with the existing implementations, but I have not properly tested them yet.
+
+Known limitations and security gaps are tracked in [docs/security.md#known-gaps](docs/security.md#known-gaps).
 
 ## Development
 
@@ -114,11 +170,17 @@ Known limits are listed in [docs/security.md#known-gaps](docs/security.md#known-
 ./scripts/build.sh       # bin/tailtab + extension/dist/{chromium,firefox}
 ```
 
-The extension suite loads `background.js` and `popup.js` unmodified into a stubbed browser environment with fake timers, so proxy-configuration lifecycle, reconnect backoff, the split-tunnel rules and the popup can all be tested without a browser. The host can be driven by hand: it reads and writes 4-byte little-endian length-prefixed JSON on stdin/stdout.
+The extension tests load `background.js` and `popup.js` as-is into a stubbed browser environment with fake timers.
+
+That lets the test suite cover things like proxy setup and teardown, reconnect backoff, split-tunnel routing and popup behaviour without needing to launch a real browser every time.
+
+The host can also be driven manually. Native messaging is just 4-byte little-endian length-prefixed JSON over stdin/stdout.
 
 ## Acknowledgements
 
-The idea and the native-messaging shape come from Tailscale's own [ts-browser-ext](https://github.com/tailscale/ts-browser-ext) experiment; two files adapt code from it under the same BSD-3-Clause licence. [Tailchrome](https://github.com/dantraynor/tailchrome) ships a similar design and was useful reading.
+The original idea and native-messaging structure are based on Tailscale's own [ts-browser-ext](https://github.com/tailscale/ts-browser-ext) experiment. Two files adapt code from it under the same BSD-3-Clause licence.
+
+[tailchrome](https://github.com/dantraynor/tailchrome) takes a similar approach and was also useful to look through while building this.
 
 ## License
 

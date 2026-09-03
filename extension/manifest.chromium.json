@@ -14,14 +14,16 @@
     "default_popup": "popup.html",
     "default_title": "tailtab",
     "default_icon": {
-      "16": "icons/icon16.png",
-      "48": "icons/icon48.png",
-      "128": "icons/icon128.png"
+      "16": "icons/idle/icon16.png",
+      "32": "icons/idle/icon32.png",
+      "48": "icons/idle/icon48.png",
+      "128": "icons/idle/icon128.png"
     }
   },
   "icons": {
-    "16": "icons/icon16.png",
-    "48": "icons/icon48.png",
-    "128": "icons/icon128.png"
+    "16": "icons/brand/icon16.png",
+    "32": "icons/brand/icon32.png",
+    "48": "icons/brand/icon48.png",
+    "128": "icons/brand/icon128.png"
   }
 }

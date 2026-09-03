@@ -44,7 +44,7 @@ for target in chromium firefox; do
   for f in "${shared[@]}"; do
     sed -e "s/__TAILTAB_BUILD__/${build_id}/g" "$src/$f" > "$out/$f"
   done
-  cp "$src"/icons/*.png "$out/icons/"
+  cp -R "$src"/icons/. "$out/icons/"
 done
 
 # The manifest version is what makes Chromium notice a rebuilt unpacked

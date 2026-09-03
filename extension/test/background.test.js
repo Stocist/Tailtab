@@ -37,7 +37,7 @@ function pacTarget(value) {
 // makeEnv builds a stubbed Chromium and loads background.js into it.
 function makeEnv(options) {
   const opts = options || {};
-  const log = { set: [], clear: [], sent: [], sentFull: [], timers: [], connects: 0, localSet: [], sessionSet: [], lastPac: "", alarms: [] };
+  const log = { set: [], clear: [], sent: [], sentFull: [], timers: [], connects: 0, localSet: [], sessionSet: [], lastPac: "", alarms: [], icons: [] };
   const mkEvent = () => {
     const fns = [];
     return { addListener: (f) => fns.push(f), _fire: (...a) => fns.forEach((f) => f(...a)) };
@@ -94,6 +94,7 @@ function makeEnv(options) {
       },
     },
     tabs: { create() {} },
+    action: { setIcon: (d) => { log.icons.push(d.path && d.path[16]); } },
     alarms: { create: (name, info) => { log.alarms.push({ name: name, info: info }); }, onAlarm: mkEvent() },
     webRequest: {
       onAuthRequired: {
@@ -227,6 +228,7 @@ function makeFirefoxEnv() {
       session: { get: async () => ({}), set: async (v) => { log.sessionSet.push(v); } },
     },
     tabs: { create() {} },
+    action: { setIcon() {} },
     alarms: { create() {}, onAlarm: mkEvent() },
   };
   const sandbox = {
@@ -1482,6 +1484,33 @@ test("a worker from another build is reported instead of silently ignored", () =
   const ui2 = openPopupUI();
   ui2.push({ connected: true, build: null, status: { state: "Running", tailnet: "t.ts.net", proxyPort: 1, warnings: [] } });
   eq(ui2.els.warning.hidden, false, "a worker with no build id is treated as old");
+});
+
+// The toolbar icon's tail dot is the one thing visible without opening the
+// popup, so it follows the same truth the popup tells.
+test("the toolbar icon follows the routing state", async () => {
+  const env = makeEnv();
+  await flush();
+  const last = () => env.log.icons[env.log.icons.length - 1];
+  env.status({ state: "NeedsLogin" });
+  await flush();
+  eq(last(), "icons/attention/icon16.png", "login needed");
+  env.status(RUNNING);
+  await flush();
+  eq(last(), "icons/connected/icon16.png", "routing");
+  env.status(Object.assign({}, RUNNING, { exitNode: "n1", exitNodeActive: false, exitNodes: [{ id: "n1", name: "server", online: false }] }));
+  await flush();
+  eq(last(), "icons/blocked/icon16.png", "exit node offline blocks browsing");
+  env.status({ state: "Stopped" });
+  await flush();
+  eq(last(), "icons/idle/icon16.png", "stopped by the user");
+  env.disconnect();
+  await flush();
+  eq(last(), "icons/attention/icon16.png", "host gone, reconnecting");
+  const before = env.log.icons.length;
+  env.disconnect();
+  await flush();
+  eq(env.log.icons.length, before, "an unchanged state does not set the icon again");
 });
 (async () => {
   let failed = 0;

@@ -486,7 +486,40 @@ api.runtime.onConnect.addListener((port) => {
   pushToPopups();
 });
 
+// iconState maps what the popup would say to the colour of the icon's tail
+// dot: green when this profile is routing, red when browsing is blocked,
+// orange when something needs the user, grey when nothing is running.
+function iconState() {
+  const st = status;
+  if (!nativePort || st.state === "Disconnected") return "attention";
+  if (st.state === "Running") {
+    if (proxyProblem) return "blocked";
+    if (st.exitNode && !st.exitNodeActive) return "blocked";
+    return "connected";
+  }
+  if (st.state === "NeedsLogin" || st.state === "NeedsMachineAuth" || st.state === "Starting") return "attention";
+  return "idle";
+}
+
+let shownIcon = "";
+function updateIcon() {
+  const next = iconState();
+  if (next === shownIcon) return;
+  shownIcon = next;
+  const action = api.action || api.browserAction;
+  if (!action || !action.setIcon) return;
+  const path = {};
+  for (const size of [16, 32, 48, 128]) path[size] = "icons/" + next + "/icon" + size + ".png";
+  try {
+    const r = action.setIcon({ path: path });
+    if (r && r.catch) r.catch(() => {});
+  } catch (e) {
+    // An icon that fails to set is cosmetic; never let it break routing.
+  }
+}
+
 function pushToPopups() {
+  updateIcon();
   const payload = { status: status, proxyProblem: proxyProblem, browser: BROWSER, connected: !!nativePort, build: BUILD };
   for (const port of popups) {
     try {
