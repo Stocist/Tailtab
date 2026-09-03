@@ -153,7 +153,7 @@ It is not in an extension store yet, so setup is still manual.
 - [x] Machine search
 - [ ] Signed Zen build through AMO
 - [ ] Release builds with prebuilt binaries
-- [ ] Icons
+- [x] Icons
 - [ ] Linux host
 - [ ] Windows host
 - [ ] Proper Chrome testing
