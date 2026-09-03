@@ -109,6 +109,7 @@
       /* footer */
       .foot { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; color: var(--muted); font-size: 11.5px; font-family: var(--mono); opacity: 0.8; }
       .foot button { color: var(--accent); font-family: inherit; }
+      .foot #settings { color: var(--muted); margin-right: 10px; }
       #warning { margin: 10px 14px 0; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--warn) 12%, transparent); color: var(--warn); font-size: 12.5px; }
       #warning.bad { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad); }
       #copied { position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 4px 10px; border-radius: 999px; font-size: 12px; }
@@ -148,6 +149,7 @@
       <div class="row"><span class="k">This device</span><span class="v" id="hostname"></span></div>
       <div class="row"><span class="k">Address</span><button class="v copy" id="selfip" title="Copy"></button></div>
       <div class="row" id="routesrow" hidden><span class="k">Subnet routes</span><span class="v" id="routes"></span></div>
+      <div class="row" id="controlrow" hidden><span class="k">Control server</span><span class="v" id="control"></span></div>
     </div>
 
     <div class="sec" id="machinesec" hidden>
@@ -159,7 +161,10 @@
 
     <div class="foot">
       <span id="port"></span>
-      <button id="logout" hidden>Log out</button>
+      <span>
+        <button id="settings" title="Settings">Settings</button>
+        <button id="logout" hidden>Log out</button>
+      </span>
     </div>
     <div id="copied" hidden>Copied</div>
 

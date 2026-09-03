@@ -12,8 +12,10 @@ import (
 	"bufio"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"regexp"
 	"sync"
 )
@@ -52,6 +54,11 @@ type Request struct {
 
 	// Browser is "zen" or "edge". It is only used to build a node hostname.
 	Browser string `json:"browser,omitempty"`
+
+	// ControlURL is a custom coordination server (Headscale, for instance),
+	// for CmdInit (the node's first login) and CmdAddAccount (a new login).
+	// Empty means Tailscale's. Validated by ValidControlURL before use.
+	ControlURL string `json:"controlURL,omitempty"`
 
 	// ID is the exit node's stable node ID for CmdExitNode (empty selects no
 	// exit node), or the account's profile ID for CmdSwitch. Either is checked
@@ -130,6 +137,38 @@ type Event struct {
 	// SubnetRoutes is every subnet a peer routes for this tailnet, as CIDRs.
 	// The browser's rules send addresses inside them to the proxy.
 	SubnetRoutes []string `json:"subnetRoutes,omitempty"`
+	// ControlURL is the coordination server the active account uses.
+	ControlURL string `json:"controlURL,omitempty"`
+}
+
+// ValidControlURL reports whether s can be used as a coordination server URL:
+// http or https, a host, no credentials, no fragment, and not absurdly long.
+// The value comes from the extension's settings page and ends up in the
+// node's prefs, so it is checked at the boundary.
+func ValidControlURL(s string) error {
+	if s == "" {
+		return nil
+	}
+	if len(s) > 512 {
+		return errors.New("control URL is too long")
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return fmt.Errorf("control URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("control URL %q must start with http:// or https://", s)
+	}
+	if u.Host == "" || u.Hostname() == "" {
+		return fmt.Errorf("control URL %q has no host", s)
+	}
+	if u.User != nil {
+		return fmt.Errorf("control URL %q must not carry credentials", s)
+	}
+	if u.Fragment != "" || u.RawQuery != "" {
+		return fmt.Errorf("control URL %q must not have a query or fragment", s)
+	}
+	return nil
 }
 
 // StatusEvent returns an empty status event, ready to be filled in.

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Tailtab settings</title>
+    <style>
+      :root { color-scheme: light dark; --bg: #ffffff; --panel: #f6f7f8; --ink: #1c1f23; --muted: #6b7280; --line: #e5e7eb; --accent: #ee7b30; --ok: #00a378; --mono: ui-monospace, "SF Mono", Menlo, monospace; }
+      @media (prefers-color-scheme: dark) { :root { --bg: #1b1e23; --panel: #14161a; --ink: #e8eaed; --muted: #9aa3ad; --line: #2a2f36; } }
+      [hidden] { display: none !important; }
+      body { margin: 0; padding: 20px; max-width: 520px; font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif; color: var(--ink); background: var(--bg); }
+      h1 { font-size: 16px; margin: 0 0 16px; }
+      label { display: block; font-weight: 600; margin: 14px 0 6px; }
+      input[type=url] { width: 100%; box-sizing: border-box; font: inherit; font-family: var(--mono); font-size: 13px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); }
+      p.help { color: var(--muted); font-size: 12.5px; margin: 6px 0 0; }
+      .actions { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
+      button { font: inherit; padding: 7px 14px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+      button.quiet { background: none; color: var(--muted); border-color: var(--line); }
+      #saved { color: var(--ok); font-size: 12.5px; }
+      #error { color: var(--accent); font-size: 12.5px; }
+    </style>
+  </head>
+  <body>
+    <h1>Tailtab settings</h1>
+
+    <label for="controlURL">Coordination server</label>
+    <input id="controlURL" type="url" placeholder="https://controlplane.tailscale.com (default)" spellcheck="false" />
+    <p class="help">
+      Leave empty for Tailscale. Set a Headscale or other self-hosted server here, with its scheme, and it is used for the
+      next login: the first one this profile makes, or the next <em>Add account…</em>. Accounts that are already logged in keep
+      the server they joined.
+    </p>
+
+    <div class="actions">
+      <button id="save">Save</button>
+      <button id="reset" class="quiet">Use Tailscale's</button>
+      <span id="saved" hidden>Saved</span>
+      <span id="error" hidden></span>
+    </div>
+
+    <script src="options.js"></script>
+  </body>
+</html>

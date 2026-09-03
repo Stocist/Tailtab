@@ -102,6 +102,10 @@ type Status struct {
 	// reach the tailnet through that peer, so the browser's rules and the
 	// host's guard both treat them as tailnet destinations.
 	SubnetRoutes []string
+	// ControlURL is the coordination server the active account talks to,
+	// from the prefs. Tailscale's own is reported too, so the popup can tell
+	// a custom one apart.
+	ControlURL string
 }
 
 // equal reports whether two snapshots are the same. Status holds a slice, so it
@@ -120,7 +124,8 @@ func (s Status) equal(o Status) bool {
 		slices.Equal(s.Warnings, o.Warnings) &&
 		slices.Equal(s.Accounts, o.Accounts) &&
 		slices.Equal(s.Peers, o.Peers) &&
-		slices.Equal(s.SubnetRoutes, o.SubnetRoutes)
+		slices.Equal(s.SubnetRoutes, o.SubnetRoutes) &&
+		s.ControlURL == o.ControlURL
 }
 
 // Node wraps a tsnet.Server for a single browser profile.
@@ -213,7 +218,7 @@ func HostnameFor(browser string) string {
 // Start brings up the node for profileID and begins watching the IPN bus. It
 // does not wait for login: the caller learns about login through the status
 // callback, which carries the auth URL.
-func (n *Node) Start(profileID, browser string) error {
+func (n *Node) Start(profileID, browser, controlURL string) error {
 	dir, err := StateDir(profileID)
 	if err != nil {
 		return err
@@ -229,6 +234,10 @@ func (n *Node) Start(profileID, browser string) error {
 		Logf:      logf,
 		UserLogf:  logf,
 		Ephemeral: false, // an ephemeral node needs an ephemeral auth key and is reaped
+		// A custom coordination server (Headscale, say) for the node's first
+		// login. Existing accounts keep the server they logged in to; this
+		// only shapes a login that has not happened yet.
+		ControlURL: controlURL,
 	}
 
 	n.mu.Lock()
@@ -350,6 +359,7 @@ func (n *Node) apply(ctx context.Context, notify ipn.Notify) {
 		}
 		if notify.Prefs != nil && notify.Prefs.Valid() {
 			st.ExitNode = string(notify.Prefs.ExitNodeID())
+			st.ControlURL = notify.Prefs.ControlURL()
 		}
 		if notify.Health != nil {
 			st.Warnings, n.loginWarning = healthWarnings(notify.Health)
@@ -731,9 +741,10 @@ func clearAccountState(st *Status) {
 
 // AddAccount starts a fresh login profile alongside the existing ones. The
 // node lands in NeedsLogin, and the login URL follows from the bus as usual.
-func (n *Node) AddAccount() error {
+func (n *Node) AddAccount(controlURL string) error {
 	n.mu.Lock()
 	add := n.newProfile
+	edit := n.editPrefs
 	n.mu.Unlock()
 	if add == nil {
 		return errors.New("node is not started")
@@ -746,6 +757,14 @@ func (n *Node) AddAccount() error {
 	})
 	if err := add(ctx); err != nil {
 		return fmt.Errorf("adding an account: %w", err)
+	}
+	// The new profile's prefs are the defaults, so a custom coordination
+	// server has to be set on it before the login is requested. Only a new
+	// login gets one: an existing account stays with the server it joined.
+	if controlURL != "" && edit != nil {
+		if _, err := edit(ctx, &ipn.MaskedPrefs{Prefs: ipn.Prefs{ControlURL: controlURL}, ControlURLSet: true}); err != nil {
+			return fmt.Errorf("setting the control server for the new account: %w", err)
+		}
 	}
 	return n.reapplyPrefs(ctx)
 }

@@ -438,6 +438,11 @@ function render(msg) {
     el("routesrow").hidden = routes.length === 0;
     setText("routes", routes.join(", "));
     el("routes").title = routes.join("\n");
+    // Tailscale's own server is the default and not worth a line.
+    const control = String(st.controlURL || "").replace(/\/+$/, "");
+    const custom = control && control !== "https://controlplane.tailscale.com";
+    el("controlrow").hidden = !custom;
+    setText("control", custom ? control.replace(/^https?:\/\//, "") : "");
   }
   setText("port", st.proxyPort ? "local proxy 127.0.0.1:" + st.proxyPort : "");
 
@@ -526,6 +531,9 @@ el("login").addEventListener("click", () => {
 });
 
 el("connect").addEventListener("click", connect);
+el("settings").addEventListener("click", () => {
+  if (api.runtime.openOptionsPage) api.runtime.openOptionsPage();
+});
 el("disconnect").addEventListener("click", () => port.postMessage({ cmd: "down" }));
 el("selfip").addEventListener("click", () => copy(latest && latest.status && latest.status.selfIP));
 el("search").addEventListener("input", () => {

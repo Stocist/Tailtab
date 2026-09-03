@@ -38,15 +38,21 @@ jobs:
       - name: Build extensions and the native host
         run: ./scripts/build.sh
 
-      - name: Cross-compile the host for macOS
+      - name: Cross-compile the host
         run: |
           set -euo pipefail
           ldflags="$(./scripts/ldflags.sh)"
           mkdir -p release
-          for arch in arm64 amd64; do
-            CGO_ENABLED=0 GOOS=darwin GOARCH="$arch" \
-              go build -trimpath -ldflags "$ldflags" -o "release/tailtab-darwin-${arch}" ./cmd/tailtab
-          done
+          build() { # goos goarch [suffix]
+            CGO_ENABLED=0 GOOS="$1" GOARCH="$2" \
+              go build -trimpath -ldflags "$ldflags" -o "release/tailtab-$1-$2$3" ./cmd/tailtab
+          }
+          build darwin arm64
+          build darwin amd64
+          build linux amd64
+          build linux arm64
+          build windows amd64 .exe
+          build windows arm64 .exe
 
       - name: Zip the extensions
         run: |

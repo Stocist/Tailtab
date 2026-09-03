@@ -22,8 +22,8 @@ type nodeBackend struct {
 	proxy *proxy.Server
 }
 
-func (b *nodeBackend) Init(profileID, browser string) error {
-	if err := b.node.Start(profileID, browser); err != nil {
+func (b *nodeBackend) Init(profileID, browser, controlURL string) error {
+	if err := b.node.Start(profileID, browser, controlURL); err != nil {
 		return err
 	}
 	// The proxy comes up with the node, before login, so the extension can wire
@@ -109,6 +109,7 @@ func (b *nodeBackend) Status() *nm.Event {
 		ev.Peers = append(ev.Peers, nm.Peer{Name: p.Name, DNSName: p.DNSName, IP: p.IP, Online: p.Online, OS: p.OS})
 	}
 	ev.SubnetRoutes = st.SubnetRoutes
+	ev.ControlURL = st.ControlURL
 	return ev
 }
 
@@ -116,7 +117,9 @@ func (b *nodeBackend) SetWantRunning(up bool) error  { return b.node.SetWantRunn
 func (b *nodeBackend) SetExitNode(id string) error   { return b.node.SetExitNode(id) }
 func (b *nodeBackend) Logout() error                 { return b.node.Logout() }
 func (b *nodeBackend) SwitchAccount(id string) error { return b.node.SwitchAccount(id) }
-func (b *nodeBackend) AddAccount() error             { return b.node.AddAccount() }
+func (b *nodeBackend) AddAccount(controlURL string) error {
+	return b.node.AddAccount(controlURL)
+}
 func (b *nodeBackend) Close() error {
 	err := b.proxy.Close()
 	if nerr := b.node.Close(); err == nil {
@@ -129,7 +132,8 @@ func (b *nodeBackend) Close() error {
 // loop can be exercised without a tailnet.
 type backend interface {
 	// Init starts the node for one browser profile. It is called at most once.
-	Init(profileID, browser string) error
+	// controlURL is a custom coordination server for the first login, or "".
+	Init(profileID, browser, controlURL string) error
 	// Status returns the current state as a status event.
 	Status() *nm.Event
 	// SetWantRunning connects (true) or disconnects (false) the node.
@@ -140,8 +144,9 @@ type backend interface {
 	Logout() error
 	// SwitchAccount makes another held login profile the active one.
 	SwitchAccount(id string) error
-	// AddAccount starts a login for a new profile, keeping the existing ones.
-	AddAccount() error
+	// AddAccount starts a login for a new profile, keeping the existing ones,
+	// against controlURL if given.
+	AddAccount(controlURL string) error
 	// Close shuts the node down.
 	Close() error
 }
@@ -247,7 +252,11 @@ func (h *host) handle(req *nm.Request) error {
 		id := req.ID
 		return h.withBackend(func(be backend) error { return be.SwitchAccount(id) })
 	case nm.CmdAddAccount:
-		return h.withBackend(backend.AddAccount)
+		if err := nm.ValidControlURL(req.ControlURL); err != nil {
+			return err
+		}
+		controlURL := req.ControlURL
+		return h.withBackend(func(be backend) error { return be.AddAccount(controlURL) })
 	case "":
 		return errors.New("message has no cmd field")
 	default:
@@ -286,6 +295,10 @@ func (h *host) handleInit(req *nm.Request) error {
 		h.mu.Unlock()
 		return fmt.Errorf("browser %q is not %q or %q", req.Browser, "zen", "edge")
 	}
+	if err := nm.ValidControlURL(req.ControlURL); err != nil {
+		h.mu.Unlock()
+		return err
+	}
 	be := h.be
 	h.initTried = true
 	h.mu.Unlock()
@@ -302,7 +315,7 @@ func (h *host) handleInit(req *nm.Request) error {
 		h.mu.Unlock()
 		h.sendStatus()
 	}()
-	if err := be.Init(req.ProfileID, req.Browser); err != nil {
+	if err := be.Init(req.ProfileID, req.Browser, req.ControlURL); err != nil {
 		// Without a node this process has nothing to offer. Report it and let
 		// the loop exit non-zero; the extension reconnects with backoff.
 		h.mu.Lock()

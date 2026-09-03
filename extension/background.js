@@ -344,10 +344,27 @@ function scheduleReconnect(why) {
   }, delay);
 }
 
+// The coordination server the settings page chose, or "" for Tailscale's.
+// Read from storage whenever it is about to be used, so a change on the
+// settings page applies to the next login without a restart.
+let controlURL = "";
+
 function sendInit() {
   if (!nativePort || initSent || !profileID) return;
   initSent = true;
-  nativePort.postMessage({ cmd: "init", profileID: profileID, browser: BROWSER });
+  const msg = { cmd: "init", profileID: profileID, browser: BROWSER };
+  if (controlURL) msg.controlURL = controlURL;
+  nativePort.postMessage(msg);
+}
+
+function loadControlURL() {
+  return api.storage.local
+    .get("controlURL")
+    .then((v) => {
+      controlURL = (v && typeof v.controlURL === "string") ? v.controlURL : "";
+      return controlURL;
+    })
+    .catch(() => controlURL);
 }
 
 function send(cmd, extra) {
@@ -407,6 +424,7 @@ function onHostMessage(msg) {
     peers: Array.isArray(msg.peers) ? msg.peers : [],
     // Subnets peers route for the tailnet; part of the routing rules.
     subnetRoutes: Array.isArray(msg.subnetRoutes) ? msg.subnetRoutes : [],
+    controlURL: msg.controlURL || "",
   });
 }
 
@@ -483,7 +501,10 @@ api.runtime.onConnect.addListener((port) => {
         send("switch", { id: typeof msg.id === "string" ? msg.id : "" });
         break;
       case "addaccount":
-        send("addaccount");
+        // Against the coordination server the settings page holds right now.
+        loadControlURL().then((url) => {
+          send("addaccount", url ? { controlURL: url } : null);
+        });
         break;
       case "status":
         send("status");
@@ -588,7 +609,7 @@ if (api.alarms) {
   });
 }
 
-loadProfileID().then((id) => {
+Promise.all([loadProfileID(), loadControlURL()]).then(([id]) => {
   profileID = id;
   sendInit();
   // The service worker may have been restarted with a status already known.

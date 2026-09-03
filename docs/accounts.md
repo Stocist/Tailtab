@@ -20,3 +20,7 @@ Everything belonging to the old account is cleared from the status the moment a 
 ## Removing an account
 
 Not offered from the popup. Tailscale's profile deletion reports success even for an id that does not exist, so the UI could not tell a no-op from a real deletion. To retire an account, log it out from the popup (which invalidates its key on the tailnet) and remove the machine in the admin console.
+
+## A different coordination server
+
+Tailtab talks to Tailscale's coordination server by default. A self-hosted one such as Headscale goes in the settings page (the **Settings** link in the popup footer, or the extension's options page). It applies to the *next* login: the first one this profile makes, or the next *Add account…*. Accounts that are already logged in keep the server they joined, which is also how Tailscale's own clients behave, and the popup shows a **Control server** line whenever the active account is not on Tailscale's. The URL is validated in the settings page and again by the host: http or https, a host, no credentials, no query or fragment.

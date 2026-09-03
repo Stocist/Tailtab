@@ -65,7 +65,7 @@ func TestValidGeckoID(t *testing.T) {
 }
 
 func TestTargetsRejectsBadInput(t *testing.T) {
-	base := Options{Home: "/home/u", ExePath: "/usr/local/bin/tailtab", EdgeID: "abcdefghijklmnopabcdefghijklmnop", GeckoID: "tailtab@stocist.dev"}
+	base := Options{GOOS: "darwin", Home: "/home/u", ExePath: "/usr/local/bin/tailtab", EdgeID: "abcdefghijklmnopabcdefghijklmnop", GeckoID: "tailtab@stocist.dev"}
 	if _, err := Targets(base); err != nil {
 		t.Fatalf("valid options rejected: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestInstallAndUninstall(t *testing.T) {
 	home := t.TempDir()
 	// Chrome is not installed here, but a Chrome-shaped directory holding a
 	// sibling host proves the uninstaller leaves other manifests alone.
-	otherHost := filepath.Join(home, edgeDir, "com.example.other.json")
+	otherHost := filepath.Join(home, "Library", "Application Support", "Microsoft Edge", "NativeMessagingHosts", "com.example.other.json")
 	if err := os.MkdirAll(filepath.Dir(otherHost), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -98,6 +98,7 @@ func TestInstallAndUninstall(t *testing.T) {
 	}
 
 	opts := Options{
+		GOOS:    "darwin",
 		Home:    home,
 		ExePath: filepath.Join(home, "bin", "tailtab"),
 		EdgeID:  "abcdefghijklmnopabcdefghijklmnop",
@@ -111,7 +112,7 @@ func TestInstallAndUninstall(t *testing.T) {
 		t.Fatalf("Install wrote %v, want the Edge and Mozilla manifests only (Chrome is absent)", written)
 	}
 
-	edge := decode(t, filepath.Join(home, edgeDir, manifestFile))
+	edge := decode(t, filepath.Join(home, "Library", "Application Support", "Microsoft Edge", "NativeMessagingHosts", manifestFile))
 	if got, want := edge.AllowedOrigins, []string{"chrome-extension://abcdefghijklmnopabcdefghijklmnop/"}; len(got) != 1 || got[0] != want[0] {
 		t.Errorf("Edge allowed_origins = %v, want %v", got, want)
 	}
@@ -122,7 +123,7 @@ func TestInstallAndUninstall(t *testing.T) {
 		t.Errorf("Edge manifest = %+v", edge)
 	}
 
-	moz := decode(t, filepath.Join(home, mozillaDir, manifestFile))
+	moz := decode(t, filepath.Join(home, "Library", "Application Support", "Mozilla", "NativeMessagingHosts", manifestFile))
 	if got := moz.AllowedExtensions; len(got) != 1 || got[0] != "tailtab@stocist.dev" {
 		t.Errorf("Mozilla allowed_extensions = %v", got)
 	}
@@ -138,7 +139,7 @@ func TestInstallAndUninstall(t *testing.T) {
 		t.Fatalf("second Install: %v", err)
 	}
 
-	removed, err := Uninstall(home)
+	removed, err := uninstall("darwin", home, "")
 	if err != nil {
 		t.Fatalf("Uninstall: %v", err)
 	}
@@ -148,21 +149,22 @@ func TestInstallAndUninstall(t *testing.T) {
 	if _, err := os.Stat(otherHost); err != nil {
 		t.Errorf("Uninstall removed a sibling manifest: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(home, edgeDir)); err != nil {
+	if _, err := os.Stat(filepath.Join(home, "Library", "Application Support", "Microsoft Edge", "NativeMessagingHosts")); err != nil {
 		t.Errorf("Uninstall removed the directory itself: %v", err)
 	}
 	// Removing what is already gone is not an error.
-	if removed, err := Uninstall(home); err != nil || len(removed) != 0 {
+	if removed, err := uninstall("darwin", home, ""); err != nil || len(removed) != 0 {
 		t.Errorf("second Uninstall = %v, %v; want no files and no error", removed, err)
 	}
 }
 
 func TestInstallRegistersChromeWhenPresent(t *testing.T) {
 	home := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(home, chromeDir), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, "Library", "Application Support", "Google", "Chrome", "NativeMessagingHosts"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	written, err := Install(Options{
+		GOOS:    "darwin",
 		Home:    home,
 		ExePath: "/opt/tailtab",
 		EdgeID:  "abcdefghijklmnopabcdefghijklmnop",
@@ -187,4 +189,94 @@ func decode(t *testing.T, path string) manifest {
 		t.Fatalf("%s is not valid JSON: %v", path, err)
 	}
 	return m
+}
+
+func TestTargetsPerPlatform(t *testing.T) {
+	base := Options{Home: "/home/u", ExePath: "/opt/tailtab", EdgeID: "abcdefghijklmnopabcdefghijklmnop", GeckoID: "tailtab@stocist.dev"}
+
+	linux := base
+	linux.GOOS = "linux"
+	t.Setenv("XDG_CONFIG_HOME", "")
+	got, err := Targets(linux)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := map[string]bool{}
+	for _, tg := range got {
+		paths[tg.Path()] = true
+		if tg.Registry != "" {
+			t.Errorf("linux target %s has a registry key", tg.Browser)
+		}
+	}
+	for _, want := range []string{
+		"/home/u/.config/microsoft-edge/NativeMessagingHosts/com.stocist.tailtab.json",
+		"/home/u/.mozilla/native-messaging-hosts/com.stocist.tailtab.json",
+		"/home/u/.config/google-chrome/NativeMessagingHosts/com.stocist.tailtab.json",
+	} {
+		if !paths[filepath.FromSlash(want)] {
+			t.Errorf("linux targets lack %s; have %v", want, paths)
+		}
+	}
+
+	win := base
+	win.GOOS = "windows"
+	win.Home = `C:\Users\u`
+	win.LocalAppData = `C:\Users\u\AppData\Local`
+	win.ExePath = `C:\Users\u\bin\tailtab.exe`
+	got, err = Targets(win)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var edge, gecko *Target
+	for i := range got {
+		if got[i].Registry == "" {
+			t.Errorf("windows target %s has no registry key", got[i].Browser)
+		}
+		if got[i].Browser == "Microsoft Edge" {
+			edge = &got[i]
+		}
+		if got[i].Browser == "Zen and Firefox" {
+			gecko = &got[i]
+		}
+	}
+	if edge == nil || gecko == nil {
+		t.Fatal("windows targets lack Edge or Gecko")
+	}
+	if edge.Registry != `Software\Microsoft\Edge\NativeMessagingHosts\com.stocist.tailtab` {
+		t.Errorf("edge registry key = %q", edge.Registry)
+	}
+	if gecko.Registry != `Software\Mozilla\NativeMessagingHosts\com.stocist.tailtab` {
+		t.Errorf("gecko registry key = %q", gecko.Registry)
+	}
+	if edge.File == gecko.File {
+		t.Error("the Chromium and Gecko manifests share a file name on Windows; they differ in content")
+	}
+	if len(edge.manifest.AllowedOrigins) != 1 || len(gecko.manifest.AllowedExtensions) != 1 {
+		t.Error("manifests were not assigned per browser family")
+	}
+
+	other := base
+	other.GOOS = "plan9"
+	if _, err := Targets(other); err == nil {
+		t.Error("an unsupported platform was accepted")
+	}
+}
+
+func TestLinuxInstallWritesOnlySupportedBrowsersByDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", "")
+	written, err := Install(Options{GOOS: "linux", Home: home, ExePath: "/opt/tailtab", EdgeID: "abcdefghijklmnopabcdefghijklmnop", GeckoID: "tailtab@stocist.dev"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(written) != 2 {
+		t.Fatalf("wrote %v, want the Edge and Mozilla manifests only", written)
+	}
+	removed, err := uninstall("linux", home, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 2 {
+		t.Fatalf("removed %v, want both", removed)
+	}
 }

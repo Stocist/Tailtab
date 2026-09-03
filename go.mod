@@ -2,7 +2,10 @@ module github.com/Stocist/tailtab
 
 go 1.27
 
-require tailscale.com v1.102.3
+require (
+	golang.org/x/sys v0.47.0
+	tailscale.com v1.102.3
+)
 
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
@@ -41,7 +44,6 @@ require (
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/time v0.15.0 // indirect

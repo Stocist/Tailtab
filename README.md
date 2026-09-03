@@ -32,6 +32,8 @@
 
 - **Multiple Tailscale accounts without constantly logging back in.** Add another account, switch tailnets from the header, and each one keeps its own node key and state.
 
+- **Your own coordination server.** Point the settings page at a Headscale (or any) control server and the next login uses it.
+
 - **A proxy only that profile can use.** The loopback proxy uses a per-process credential and rejects anything that should not be going through the tailnet. Other programs on the machine cannot just borrow the browser profile's Tailscale identity.
 
 - **Status that actually tells you what is happening.** The popup treats "the node is connected" and "the browser is actually routing through it" as two separate things, because they are. If they do not match, it tells you.
@@ -152,10 +154,10 @@ It is not in an extension store yet, so setup is still manual.
 - [x] Account switching
 - [x] Machine search
 - [ ] Signed Zen build through AMO
-- [ ] Release builds with prebuilt binaries
+- [x] Release builds with prebuilt binaries
 - [x] Icons
-- [ ] Linux host
-- [ ] Windows host
+- [x] Linux host (built and unit-tested; not yet exercised end to end)
+- [x] Windows host (built and unit-tested; not yet exercised end to end)
 - [ ] Proper Chrome testing
 - [ ] Proper Firefox testing
 

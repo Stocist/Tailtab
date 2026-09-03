@@ -85,7 +85,7 @@ function makeEnv(options) {
     },
     storage: {
       local: {
-        get: async () => ({ profileID: "0f8fad5b-d9cb-469f-a165-70867728950e" }),
+        get: async () => Object.assign({ profileID: "0f8fad5b-d9cb-469f-a165-70867728950e" }, opts.local || {}),
         set: async (v) => { log.localSet.push(v); },
       },
       session: {
@@ -1569,6 +1569,47 @@ test("the popup lists subnet routes when there are any", () => {
   eq(ui.els.routes.textContent, "192.168.1.0/24, 10.0.0.0/8", "routes listed");
   ui.push({ connected: true, status: { state: "Running", tailnet: "t.ts.net", proxyPort: 1, warnings: [], accounts: [], subnetRoutes: [] } });
   eq(ui.els.routesrow.hidden, true, "row hidden without routes");
+});
+
+// A custom coordination server (Headscale) travels with the first login and
+// with every Add account, and never anywhere else.
+test("the control server from settings goes to the host on init and add account", async () => {
+  const env = makeEnv({ local: { controlURL: "https://headscale.example.com" } });
+  await flush();
+  const init = env.log.sentFull.find((m) => m.cmd === "init");
+  eq(init.controlURL, "https://headscale.example.com", "init carries it");
+  env.status(RUNNING);
+  await flush();
+  // Through the popup's port, which is where the settings value is re-read.
+  const popup = env.openPopup();
+  popup.onMessage._fire({ cmd: "addaccount" });
+  await flush();
+  const add = env.log.sentFull.filter((m) => m.cmd === "addaccount").pop();
+  eq(add.controlURL, "https://headscale.example.com", "addaccount carries it");
+
+  const plain = makeEnv();
+  await flush();
+  const init2 = plain.log.sentFull.find((m) => m.cmd === "init");
+  eq(init2.controlURL, undefined, "no field at all for Tailscale's server");
+});
+
+test("the popup shows a custom control server and hides Tailscale's", () => {
+  const ui = openPopupUI();
+  ui.push({ connected: true, status: { state: "Running", tailnet: "t.ts.net", proxyPort: 1, warnings: [], accounts: [], controlURL: "https://controlplane.tailscale.com" } });
+  eq(ui.els.controlrow.hidden, true, "default server hidden");
+  ui.push({ connected: true, status: { state: "Running", tailnet: "hs.example.com", proxyPort: 1, warnings: [], accounts: [], controlURL: "https://headscale.example.com/" } });
+  eq(ui.els.controlrow.hidden, false, "custom server shown");
+  eq(ui.els.control.textContent, "headscale.example.com", "shown without the scheme");
+});
+
+test("the settings page validates a control server like the host does", () => {
+  const opts = require(path.join(SRC, "options.js"));
+  eq(opts.tailtabValidControlURL(""), "", "empty is Tailscale's");
+  eq(opts.tailtabValidControlURL("https://headscale.example.com"), "", "https ok");
+  eq(opts.tailtabValidControlURL("http://10.0.0.5:8080"), "", "http with port ok");
+  for (const bad of ["headscale.example.com", "ftp://x.example", "https://u:p@hs.example.com", "https://hs.example.com/?x=1", "https://hs.example.com/#f"]) {
+    if (!opts.tailtabValidControlURL(bad)) throw new Error("accepted " + bad);
+  }
 });
 (async () => {
   let failed = 0;

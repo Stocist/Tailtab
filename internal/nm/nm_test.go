@@ -155,3 +155,18 @@ func frame(t *testing.T, body string) []byte {
 	b.WriteString(body)
 	return b.Bytes()
 }
+
+func TestValidControlURL(t *testing.T) {
+	good := []string{"", "https://headscale.example.com", "http://10.0.0.5:8080", "https://controlplane.tailscale.com", "https://hs.example.com/base"}
+	for _, u := range good {
+		if err := ValidControlURL(u); err != nil {
+			t.Errorf("ValidControlURL(%q) = %v, want nil", u, err)
+		}
+	}
+	bad := []string{"headscale.example.com", "ftp://x.example", "https://", "https://user:pw@hs.example.com", "https://hs.example.com/?x=1", "https://hs.example.com/#f", "https://" + strings.Repeat("a", 600) + ".example"}
+	for _, u := range bad {
+		if err := ValidControlURL(u); err == nil {
+			t.Errorf("ValidControlURL(%q) = nil, want an error", u)
+		}
+	}
+}

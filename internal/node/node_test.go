@@ -624,7 +624,7 @@ func TestAddAccountStartsAFreshProfileAndRestoresPrefs(t *testing.T) {
 	n.st.Tailnet = "tail1a2b3c.ts.net"
 	n.st.Hostname = "mac-tailtab-edge"
 	n.st.Peers = []Peer{{Name: "server"}}
-	if err := n.AddAccount(); err != nil {
+	if err := n.AddAccount(""); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := strings.Join(order, ","), "new,prefs"; got != want {
@@ -685,5 +685,33 @@ func TestLoginRestoresRouteAcceptance(t *testing.T) {
 	}
 	if got == nil || !got.RouteAllSet || !got.Prefs.RouteAll {
 		t.Fatalf("RouteAll not restored with the other prefs: %+v", got)
+	}
+}
+
+func TestAddAccountSetsTheControlServerBeforeLogin(t *testing.T) {
+	n, _, _ := newTestNode(t)
+	n.hostname = "mac-tailtab-edge"
+	var order []string
+	n.newProfile = func(context.Context) error { order = append(order, "new"); return nil }
+	n.editPrefs = func(_ context.Context, mp *ipn.MaskedPrefs) (*ipn.Prefs, error) {
+		if mp.ControlURLSet {
+			order = append(order, "control:"+mp.Prefs.ControlURL)
+		} else {
+			order = append(order, "prefs")
+		}
+		return &mp.Prefs, nil
+	}
+	if err := n.AddAccount("https://headscale.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(order, ","), "new,control:https://headscale.example.com,prefs"; got != want {
+		t.Fatalf("call order %q, want %q", got, want)
+	}
+	order = nil
+	if err := n.AddAccount(""); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(order, ","), "new,prefs"; got != want {
+		t.Fatalf("without a control URL: %q, want %q", got, want)
 	}
 }

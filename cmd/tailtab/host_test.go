@@ -33,9 +33,15 @@ type fakeBackend struct {
 	exitErr   error
 	switched  []string // every id SwitchAccount was called with
 	added     int      // AddAccount calls
+	// controlURL is what Init was given; addedControlURL what AddAccount was.
+	controlURL      string
+	addedControlURL string
 }
 
-func (f *fakeBackend) Init(profileID, browser string) error {
+func (f *fakeBackend) Init(profileID, browser, controlURL string) error {
+	f.mu.Lock()
+	f.controlURL = controlURL
+	f.mu.Unlock()
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.profileID, f.browser = profileID, browser
@@ -95,10 +101,11 @@ func (f *fakeBackend) SwitchAccount(id string) error {
 	return nil
 }
 
-func (f *fakeBackend) AddAccount() error {
+func (f *fakeBackend) AddAccount(controlURL string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.added++
+	f.addedControlURL = controlURL
 	return nil
 }
 

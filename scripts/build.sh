@@ -26,7 +26,7 @@ src="extension"
 dist="$src/dist"
 # Copied by name, so extension/test/ and anything else alongside the sources
 # never reaches a browser.
-shared=(background.js rules.js popup.html popup.js)
+shared=(background.js rules.js popup.html popup.js options.html options.js)
 
 # Every build gets an id (the commit, plus -dirty when the tree has edits) and
 # a manifest version that grows with the commit count. Chromium keeps an
