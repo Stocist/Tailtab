@@ -148,7 +148,12 @@ function makeEnv(options) {
     // disconnect drops the native port, as a dead host would.
     disconnect() { nativePort.onDisconnect._fire(); },
     // popup sends a command the way the popup's port does.
-    popup(cmd) { vm.runInContext("send(" + JSON.stringify(cmd) + ");", ctx); },
+    // popup sends a command the way the popup does: through its port, so the
+    // background's own bookkeeping (who asked for a stop) sees it.
+    popup(cmd) {
+      const port = this.openPopup();
+      port.onMessage._fire(typeof cmd === "string" ? { cmd: cmd } : cmd);
+    },
     // authRequired fires an authentication challenge at the registered
     // onAuthRequired listener and resolves with what it answered. The answer is
     // asynchronous by design: a worker woken by the challenge itself waits for
@@ -1626,6 +1631,7 @@ test("a user disconnect hands the proxy setting back; a crash parks it", async (
   await flush();
   env.status(RUNNING);
   await flush();
+  env.popup("down");
   env.status({ state: "Stopped" });
   await flush();
   eq(env.log.clear, ["regular"], "Stopped by the user clears the setting");
@@ -1650,15 +1656,50 @@ test("the parked PAC keeps exit mode, which is the kill switch", async () => {
   eq(find("http://192.168.0.5/", "192.168.0.5"), "DIRECT", "the LAN stays local");
 });
 
-test("a logout hands the proxy setting back like a stop does", async () => {
+test("a logout the user asked for hands the setting back; a switch that lands on login parks it", async () => {
   const env = makeEnv();
   await flush();
   env.status(RUNNING);
   await flush();
+  // An account switch: nobody asked to stop, the target just needs a login.
+  const popup = env.openPopup();
+  popup.onMessage._fire({ cmd: "switch", id: "p2" });
   env.status({ state: "NeedsLogin" });
   await flush();
-  eq(env.log.clear, ["regular"], "logged out by the user clears the setting");
+  eq(env.log.clear, [], "mid-switch the setting is not cleared");
+  eq(env.log.set[env.log.set.length - 1], "PROXY 0.0.0.1:1", "it is parked");
+
+  env.status(RUNNING);
+  await flush();
+  popup.onMessage._fire({ cmd: "logout" });
+  env.status({ state: "NeedsLogin" });
+  await flush();
+  eq(env.log.clear, ["regular"], "a logout the user asked for clears it");
+
+  env.status(RUNNING);
+  await flush();
+  env.disconnect();
+  await flush();
+  eq(env.log.clear.length, 1, "a crash after that still parks rather than clears");
 });
+
+test("the rules snapshot in storage.local feeds the startup park after a browser restart", async () => {
+  const first = makeEnv();
+  await flush();
+  first.status(Object.assign({}, RUNNING, { tailnet: "corp.example.com", subnetRoutes: ["10.42.0.0/16"] }));
+  await flush();
+  const snap = first.log.localSet.filter((v) => v.rules).pop();
+  eq(snap.rules, { tailnet: "corp.example.com", subnetRoutes: ["10.42.0.0/16"], exitNode: "" }, "the snapshot holds the routing facts and nothing else");
+
+  // A browser restart: no session storage, a stale setting of ours, the
+  // local snapshot available.
+  const env = makeEnv({ levelOfControl: "controlled_by_this_extension", local: { rules: snap.rules } });
+  await flush();
+  const find = vm.runInNewContext(env.log.lastPac + "\nFindProxyForURL", {});
+  eq(find("http://nas.corp.example.com/", "nas.corp.example.com"), "PROXY 0.0.0.1:1", "the custom domain is parked, not sent to DNS");
+  eq(find("http://10.42.7.1/", "10.42.7.1"), "PROXY 0.0.0.1:1", "the routed subnet too");
+});
+
 
 test("the startup park carries the last known rules, not blank ones", async () => {
   const env = makeEnv({ levelOfControl: "controlled_by_this_extension", session: { status: { tailnet: "corp.example.com", subnetRoutes: ["10.42.0.0/16"], exitNode: "n1" } } });

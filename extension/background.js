@@ -80,6 +80,9 @@ let proxyToken = "";
 
 let profileID = null;
 let nativePort = null;
+// Set when the user asked for the node to stop or log out, so the next
+// transition out of Running clears the proxy setting instead of parking it.
+let userStopped = false;
 let initSent = false;
 let reconnectDelay = RECONNECT_MIN_MS;
 let reconnectTimer = null;
@@ -347,8 +350,15 @@ async function dropStaleProxy() {
   // whether an exit node was selected (the kill switch). The last status is
   // in session storage; nothing else from it is trusted.
   try {
+    let st = null;
     const saved = await api.storage.session.get("status");
-    const st = saved && saved.status;
+    if (saved && saved.status && typeof saved.status === "object") st = saved.status;
+    if (!st) {
+      // After a browser restart there is no session; the local snapshot has
+      // the same three facts.
+      const local = await api.storage.local.get("rules");
+      if (local && local.rules && typeof local.rules === "object") st = local.rules;
+    }
     if (st && typeof st === "object") {
       status = Object.assign({}, status, {
         tailnet: typeof st.tailnet === "string" ? st.tailnet : "",
@@ -536,11 +546,14 @@ function setStatus(next) {
     }
   } else if (wasRunning) {
     // Stopped or logged out by the user: the browser is theirs again.
-    // Anything else that took the node down (host crash, switch in flight)
-    // keeps the rules, on a dead port, so nothing leaks while it recovers.
-    if (next.state === "Stopped" || next.state === "NeedsLogin") clearProxy();
+    // Anything else that took the node down (host crash, an account switch
+    // that lands on NeedsLogin) keeps the rules, on a dead port, so nothing
+    // leaks while it recovers. What tells the two apart is who asked.
+    if (userStopped && (next.state === "Stopped" || next.state === "NeedsLogin")) clearProxy();
     else parkProxy();
   }
+  if (next.state === "Running") userStopped = false;
+  saveRulesSnapshot(next);
   pushToPopups();
 }
 
@@ -559,9 +572,11 @@ api.runtime.onConnect.addListener((port) => {
       case "down":
         // The proxy setting is handed back when the host reports that it has
         // left Running, not here: if the command fails, nothing should change.
+        userStopped = true;
         send("down");
         break;
       case "logout":
+        userStopped = true;
         send("logout");
         break;
       case "exitnode":
@@ -636,6 +651,18 @@ function pushToPopups() {
 }
 
 // --------------------------------------------------------------------- storage
+
+// saveRulesSnapshot keeps the routing facts (never the token) in storage.local,
+// which survives a browser restart where storage.session does not: that is
+// exactly when a stale proxy setting exists and the startup park needs the
+// real rules rather than blank ones.
+function saveRulesSnapshot(st) {
+  try {
+    api.storage.local.set({ rules: { tailnet: st.tailnet || "", subnetRoutes: Array.isArray(st.subnetRoutes) ? st.subnetRoutes : [], exitNode: st.exitNode || "" } });
+  } catch (e) {
+    // best effort
+  }
+}
 
 function saveStatus() {
   try {

@@ -44,10 +44,10 @@ function tailtabInRoutes(h, routes) {
     }
     return false;
   }
-  function v6Overlaps(n6, bits) {
-    // Routes narrower than /16 never get here (see the floor below), so the
-    // top group decides for link-local and multicast; the unspecified and
-    // loopback addresses are the two all-zero-but-last cases.
+  function v6Overlaps(n6) {
+    // Routes broader than /16 never get here (see the floor below), so the
+    // top group alone decides for link-local and multicast; the unspecified
+    // and loopback addresses are the two all-zero-but-last cases.
     var zeros = true;
     for (var z = 0; z < 7; z++) if (n6[z] !== 0) { zeros = false; break; }
     if (zeros && n6[7] <= 1) return true; // ::/128 and ::1/128 (or a route starting there)
@@ -107,7 +107,7 @@ function tailtabInRoutes(h, routes) {
       var n6 = ipv6(r6[0]);
       if (!n6) continue;
       if (bits6 < 16) continue;
-      if (v6Overlaps(n6, bits6)) continue;
+      if (v6Overlaps(n6)) continue;
       var ok = true;
       for (var k = 0; k < 8 && ok; k++) {
         var take = bits6 - 16 * k;

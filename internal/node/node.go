@@ -453,7 +453,14 @@ func (n *Node) TSNet() *tsnet.Server {
 func (n *Node) Status() Status {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return n.st
+	st := n.st
+	// tailtab's own notes ride on every snapshot, not just the ones carrying a
+	// health change, so they survive an account switch (which clears the
+	// warnings) and a popup opened late.
+	if len(n.notes) > 0 {
+		st.Warnings = append(slices.Clone(st.Warnings), n.notes...)
+	}
+	return st
 }
 
 // watch consumes the IPN bus until the context is cancelled or the bus fails.
@@ -499,7 +506,6 @@ func (n *Node) apply(ctx context.Context, notify ipn.Notify) {
 		}
 		if notify.Health != nil {
 			st.Warnings, n.loginWarning = healthWarnings(notify.Health)
-			st.Warnings = append(st.Warnings, n.notes...)
 		}
 		if notify.ErrMessage != nil {
 			st.Error = *notify.ErrMessage
@@ -582,13 +588,15 @@ func (n *Node) refresh(ctx context.Context) {
 		if st.ExitNode == "" && st.State == ipn.Running.String() {
 			if account := activeAccountID(st.Accounts); account != "" && !n.exitRestored[account] {
 				if id := readStateFile(n.dir, exitNodeFileFor(account)); id != "" {
+					// Only once it is actually on offer: a refresh before the
+					// netmap arrives must not use up the one restore.
 					if slices.ContainsFunc(st.ExitNodes, func(e ExitNode) bool { return e.ID == id }) {
 						restore = id
+						if n.exitRestored == nil {
+							n.exitRestored = map[string]bool{}
+						}
+						n.exitRestored[account] = true
 					}
-					if n.exitRestored == nil {
-						n.exitRestored = map[string]bool{}
-					}
-					n.exitRestored[account] = true
 				}
 			}
 		}

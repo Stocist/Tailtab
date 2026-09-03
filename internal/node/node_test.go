@@ -840,9 +840,18 @@ func TestExitNodeSelectionIsRememberedPerAccount(t *testing.T) {
 		t.Fatal("the selection was not written down for account pA")
 	}
 
-	// A restart: nothing selected, account pA active, nodeA on offer -> put back.
+	// A restart: the first refresh comes before the netmap, with nothing on
+	// offer; it must not use up the restore.
 	n.st.ExitNode = ""
 	n.exitRestored = nil
+	n.readStatus = func(context.Context) (*ipnstate.Status, error) {
+		return &ipnstate.Status{BackendState: "Running"}, nil
+	}
+	n.refresh(context.Background())
+	if strings.Join(set, ",") != "nodeA" {
+		t.Fatalf("prefs edits = %v, nothing should be restored before the node is offered", set)
+	}
+	// Then the netmap arrives with nodeA on offer -> put back.
 	n.readStatus = func(context.Context) (*ipnstate.Status, error) {
 		return &ipnstate.Status{BackendState: "Running", Peer: map[key.NodePublic]*ipnstate.PeerStatus{
 			key.NewNode().Public(): {ID: "nodeA", HostName: "server", ExitNodeOption: true, Online: true},
