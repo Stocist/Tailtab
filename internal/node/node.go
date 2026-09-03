@@ -166,8 +166,20 @@ type Node struct {
 	// under the OS hostname (seen live: "Laptop" on the auth page instead of
 	// "laptop-tailtab-edge").
 	hostname string
-	started  bool
-	st       Status
+	// dir is the node's state directory; tailtab keeps two small files of
+	// its own there, "control-url" and "exit-node" (see Start).
+	dir string
+	// controlURL is the coordination server this browser profile's accounts
+	// use. It is chosen at the first login and pinned in dir/control-url,
+	// because tsnet replaces the active profile's prefs on every Start: the
+	// same URL has to be passed every time or a Headscale account would be
+	// repointed at Tailscale. Empty means Tailscale's.
+	controlURL string
+	// notes are warnings of tailtab's own (as opposed to Tailscale's health
+	// warnables), appended to Status.Warnings.
+	notes   []string
+	started bool
+	st      Status
 }
 
 // New returns a Node that calls onChange whenever its status changes.
@@ -176,6 +188,53 @@ func New(onChange func(Status)) *Node {
 		onChange = func(Status) {}
 	}
 	return &Node{onChange: onChange, st: Status{State: ipn.NoState.String()}}
+}
+
+// Files tailtab keeps in the node's state directory, beside tsnet's.
+const (
+	controlURLFile = "control-url"
+	exitNodeFile   = "exit-node"
+)
+
+func readStateFile(dir, name string) string {
+	b, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func writeStateFile(dir, name, value string) error {
+	p := filepath.Join(dir, name)
+	if value == "" {
+		err := os.Remove(p)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	return os.WriteFile(p, []byte(value+"\n"), 0o600)
+}
+
+// pinControlURL decides which coordination server this profile uses. The
+// first start with a setting pins it; later starts use the pin regardless of
+// the setting, so an account can never be repointed. It returns the effective
+// URL and a note for the popup when the setting and the pin disagree.
+func pinControlURL(dir, setting string) (effective, note string, err error) {
+	pinned := readStateFile(dir, controlURLFile)
+	switch {
+	case pinned != "":
+		if setting != "" && setting != pinned {
+			note = "This profile's accounts use " + pinned + "; the coordination server in Settings applies only to a browser profile that has not logged in yet."
+		}
+		return pinned, note, nil
+	case setting != "":
+		if err := writeStateFile(dir, controlURLFile, setting); err != nil {
+			return "", "", fmt.Errorf("remembering the coordination server: %w", err)
+		}
+		return setting, "", nil
+	}
+	return "", "", nil
 }
 
 // StateDir returns the tsnet state directory for a profile. Each profile gets
@@ -227,17 +286,23 @@ func (n *Node) Start(profileID, browser, controlURL string) error {
 		return fmt.Errorf("creating the state directory: %w", err)
 	}
 
+	// The coordination server is per browser profile and pinned on first
+	// use: tsnet's Start replaces the active account's prefs wholesale, so
+	// whatever URL is passed here becomes every account's. A setting that
+	// differs from the pin is reported, not applied.
+	effective, note, err := pinControlURL(dir, controlURL)
+	if err != nil {
+		return err
+	}
+
 	logf := func(format string, args ...any) { log.Printf("tsnet: "+format, args...) }
 	ts := &tsnet.Server{
-		Dir:       dir,
-		Hostname:  HostnameFor(browser),
-		Logf:      logf,
-		UserLogf:  logf,
-		Ephemeral: false, // an ephemeral node needs an ephemeral auth key and is reaped
-		// A custom coordination server (Headscale, say) for the node's first
-		// login. Existing accounts keep the server they logged in to; this
-		// only shapes a login that has not happened yet.
-		ControlURL: controlURL,
+		Dir:        dir,
+		Hostname:   HostnameFor(browser),
+		Logf:       logf,
+		UserLogf:   logf,
+		Ephemeral:  false, // an ephemeral node needs an ephemeral auth key and is reaped
+		ControlURL: effective,
 	}
 
 	n.mu.Lock()
@@ -248,6 +313,11 @@ func (n *Node) Start(profileID, browser, controlURL string) error {
 	n.ts = ts
 	n.started = true
 	n.hostname = ts.Hostname
+	n.dir = dir
+	n.controlURL = effective
+	if note != "" {
+		n.notes = append(n.notes, note)
+	}
 	n.st.Hostname = ts.Hostname
 	n.mu.Unlock()
 
@@ -273,8 +343,20 @@ func (n *Node) Start(profileID, browser, controlURL string) error {
 
 	// tsnet sets its own prefs at start and nothing else; accepting subnet
 	// routes is ours to add, and it has to be on before the netmap arrives.
+	// A failure here is not just logged: without RouteAll no subnet route
+	// works for the whole session, and the popup should say so.
 	if err := n.acceptRoutes(context.Background()); err != nil {
 		log.Printf("accepting subnet routes: %v", err)
+		n.mu.Lock()
+		n.notes = append(n.notes, "Subnet routes are off: "+err.Error())
+		n.mu.Unlock()
+	}
+	// The exit node the user picked last time. tsnet's Start resets the prefs,
+	// so the selection is tailtab's to remember and put back.
+	if id := readStateFile(dir, exitNodeFile); id != "" {
+		if err := n.setExitNodePref(context.Background(), id); err != nil {
+			log.Printf("restoring the exit node %q: %v", id, err)
+		}
 	}
 
 	// NotifyInitialStatus is what carries the tailnet name and self IP:
@@ -363,6 +445,7 @@ func (n *Node) apply(ctx context.Context, notify ipn.Notify) {
 		}
 		if notify.Health != nil {
 			st.Warnings, n.loginWarning = healthWarnings(notify.Health)
+			st.Warnings = append(st.Warnings, n.notes...)
 		}
 		if notify.ErrMessage != nil {
 			st.Error = *notify.ErrMessage
@@ -500,9 +583,12 @@ func applyIPNStatus(st *Status, s *ipnstate.Status) {
 		// DNSName is the node's own MagicDNS name and is what the tailnet
 		// calls this browser profile; HostName is the machine's OS hostname,
 		// which is all that exists before login.
+		// Before login the status only knows the OS hostname, which is not
+		// this node's name; keep the name tailtab started with until the
+		// tailnet has assigned one.
 		if name, _, ok := strings.Cut(strings.TrimSuffix(self.DNSName, "."), "."); ok && name != "" {
 			st.Hostname = name
-		} else if self.HostName != "" {
+		} else if st.Hostname == "" && self.HostName != "" {
 			st.Hostname = self.HostName
 		}
 		if len(self.TailscaleIPs) > 0 {
@@ -529,7 +615,7 @@ func applySubnetRoutes(st *Status, s *ipnstate.Status) {
 			continue
 		}
 		for _, r := range p.PrimaryRoutes.AsSlice() {
-			if !r.IsValid() || r.Bits() == 0 {
+			if !UsableRoute(r) {
 				continue
 			}
 			r = r.Masked()
@@ -551,6 +637,46 @@ var (
 	tailscaleCGNAT = netip.MustParsePrefix("100.64.0.0/10")
 	tailscaleULA   = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
 )
+
+// reservedRanges are address ranges no subnet route may touch: this machine,
+// link-local (including cloud metadata endpoints), multicast and the
+// unspecified address. A route that overlaps any of them is dropped, so an
+// approved-but-hostile route cannot make the proxy dial the user's own machine
+// (an SSRF onto local services). extension/rules.js applies the same test.
+var reservedRanges = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("127.0.0.0/8"),
+	netip.MustParsePrefix("169.254.0.0/16"),
+	netip.MustParsePrefix("224.0.0.0/4"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("::/128"),
+	netip.MustParsePrefix("::1/128"),
+	netip.MustParsePrefix("fe80::/10"),
+	netip.MustParsePrefix("ff00::/8"),
+}
+
+// UsableRoute reports whether a subnet route is one tailtab will honour: no
+// broader than /8 (IPv4) or /16 (IPv6), and not overlapping a reserved range.
+// Default routes belong to exit nodes and are handled as exit mode instead.
+func UsableRoute(r netip.Prefix) bool {
+	if !r.IsValid() {
+		return false
+	}
+	floor := 8
+	if r.Addr().Unmap().Is6() && !r.Addr().Is4In6() {
+		floor = 16
+	}
+	if r.Bits() < floor {
+		return false
+	}
+	r = r.Masked()
+	for _, res := range reservedRanges {
+		if r.Overlaps(res) {
+			return false
+		}
+	}
+	return true
+}
 
 // applyExitNodes copies the exit-node offers and the state of the selected one
 // out of a status snapshot.
@@ -685,14 +811,35 @@ func (n *Node) SetExitNode(id string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	if err := n.setExitNodePref(ctx, id); err != nil {
+		return err
+	}
+	// Remembered by tailtab because tsnet's Start resets the prefs; Start
+	// puts it back.
+	n.mu.Lock()
+	dir := n.dir
+	n.mu.Unlock()
+	if err := writeStateFile(dir, exitNodeFile, id); err != nil {
+		log.Printf("remembering the exit node: %v", err)
+	}
+	// The prefs notification that follows carries the new selection, and the
+	// refresh it triggers says whether the node is actually usable.
+	return nil
+}
+
+func (n *Node) setExitNodePref(ctx context.Context, id string) error {
+	n.mu.Lock()
+	edit := n.editPrefs
+	n.mu.Unlock()
+	if edit == nil {
+		return errors.New("node is not started")
+	}
 	if _, err := edit(ctx, &ipn.MaskedPrefs{
 		Prefs:         ipn.Prefs{ExitNodeID: tailcfg.StableNodeID(id)},
 		ExitNodeIDSet: true,
 	}); err != nil {
 		return fmt.Errorf("selecting the exit node: %w", err)
 	}
-	// The prefs notification that follows carries the new selection, and the
-	// refresh it triggers says whether the node is actually usable.
 	return nil
 }
 
@@ -737,6 +884,8 @@ func clearAccountState(st *Status) {
 	st.ExitNode = ""
 	st.ExitNodeActive = false
 	st.Warnings = nil
+	st.SubnetRoutes = nil
+	st.ControlURL = ""
 }
 
 // AddAccount starts a fresh login profile alongside the existing ones. The
@@ -745,10 +894,33 @@ func (n *Node) AddAccount(controlURL string) error {
 	n.mu.Lock()
 	add := n.newProfile
 	edit := n.editPrefs
+	pinned := n.controlURL
+	accounts := len(n.st.Accounts)
+	dir := n.dir
 	n.mu.Unlock()
 	if add == nil {
 		return errors.New("node is not started")
 	}
+	// One coordination server per browser profile (see the controlURL
+	// field). A profile with no accounts yet may still choose; afterwards a
+	// different server needs a different browser profile.
+	if controlURL != "" && controlURL != pinned {
+		if accounts > 0 {
+			shown := pinned
+			if shown == "" {
+				shown = "Tailscale's coordination server"
+			}
+			return fmt.Errorf("this browser profile's accounts use %s; a different coordination server needs a new browser profile", shown)
+		}
+		if err := writeStateFile(dir, controlURLFile, controlURL); err != nil {
+			return fmt.Errorf("remembering the coordination server: %w", err)
+		}
+		n.mu.Lock()
+		n.controlURL = controlURL
+		n.mu.Unlock()
+		pinned = controlURL
+	}
+	controlURL = pinned
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	n.update(func(st *Status) {
@@ -758,9 +930,8 @@ func (n *Node) AddAccount(controlURL string) error {
 	if err := add(ctx); err != nil {
 		return fmt.Errorf("adding an account: %w", err)
 	}
-	// The new profile's prefs are the defaults, so a custom coordination
-	// server has to be set on it before the login is requested. Only a new
-	// login gets one: an existing account stays with the server it joined.
+	// The new profile's prefs are the defaults, so the profile's coordination
+	// server has to be set on it before the login is requested.
 	if controlURL != "" && edit != nil {
 		if _, err := edit(ctx, &ipn.MaskedPrefs{Prefs: ipn.Prefs{ControlURL: controlURL}, ControlURLSet: true}); err != nil {
 			return fmt.Errorf("setting the control server for the new account: %w", err)
@@ -841,11 +1012,12 @@ func (n *Node) reapplyPrefs(ctx context.Context) error {
 	n.mu.Lock()
 	edit := n.editPrefs
 	hostname := n.hostname
+	controlURL := n.controlURL
 	n.mu.Unlock()
 	if edit == nil || hostname == "" {
 		return nil
 	}
-	if _, err := edit(ctx, &ipn.MaskedPrefs{
+	mp := &ipn.MaskedPrefs{
 		// RouteAll accepts the subnet routes peers advertise; without it the
 		// node never learns the route and a LAN address behind a subnet
 		// router is unreachable however the browser routes it.
@@ -853,7 +1025,12 @@ func (n *Node) reapplyPrefs(ctx context.Context) error {
 		HostnameSet:    true,
 		WantRunningSet: true,
 		RouteAllSet:    true,
-	}); err != nil {
+	}
+	if controlURL != "" {
+		mp.Prefs.ControlURL = controlURL
+		mp.ControlURLSet = true
+	}
+	if _, err := edit(ctx, mp); err != nil {
 		return fmt.Errorf("restoring the node's prefs before login: %w", err)
 	}
 	return nil

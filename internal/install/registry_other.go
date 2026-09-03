@@ -11,3 +11,5 @@ func setRegistryPath(key, path string) error {
 }
 
 func deleteRegistryKey(key string) error { return nil }
+
+func registryKeyExists(key string) bool { return false }

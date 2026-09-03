@@ -92,6 +92,17 @@
     {"host": "2001:db8:abcd::1", "suffix": "", "routes": ["2001:db8:abcd::/48"], "proxy": true, "why": "public IPv6 route"},
     {"host": "8.8.8.8", "suffix": "", "routes": ["8.8.8.0/24"], "proxy": true, "why": "a public subnet route is still a route"},
     {"host": "192.168.1.10", "suffix": "", "routes": ["not-a-route"], "proxy": false, "why": "malformed route is ignored"},
-    {"host": "nas.lan", "suffix": "", "routes": ["192.168.1.0/24"], "proxy": false, "why": "routes match addresses, not names"}
+    {"host": "nas.lan", "suffix": "", "routes": ["192.168.1.0/24"], "proxy": false, "why": "routes match addresses, not names"},
+    {"host": "127.0.0.1", "suffix": "", "routes": ["127.0.0.0/8"], "proxy": false, "why": "a route covering loopback is ignored (B2)"},
+    {"host": "127.0.0.1", "suffix": "", "routes": ["0.0.0.0/1"], "proxy": false, "why": "a half-internet route is ignored (F5)"},
+    {"host": "8.8.8.8", "suffix": "", "routes": ["0.0.0.0/1"], "proxy": false, "why": "broader than /8 is not a subnet route"},
+    {"host": "8.8.8.8", "suffix": "", "routes": ["8.0.0.0/8"], "proxy": true, "why": "/8 is the floor and is honoured"},
+    {"host": "169.254.169.254", "suffix": "", "routes": ["169.254.0.0/16"], "proxy": false, "why": "link-local (cloud metadata) is never routed"},
+    {"host": "224.0.0.1", "suffix": "", "routes": ["224.0.0.0/8"], "proxy": false, "why": "multicast is never routed"},
+    {"host": "::1", "suffix": "", "routes": ["::/1"], "proxy": false, "why": "a route covering IPv6 loopback is ignored"},
+    {"host": "fe80::1", "suffix": "", "routes": ["fe80::/10"], "proxy": false, "why": "IPv6 link-local is never routed"},
+    {"host": "fd00:1:2::5", "suffix": "", "routes": ["fd00::/8"], "proxy": false, "why": "broader than /16 is not an IPv6 subnet route"},
+    {"host": "010.0.0.1", "suffix": "", "routes": ["10.0.0.0/8"], "proxy": false, "why": "a leading-zero octet is not an address (N1)"},
+    {"host": "10.0.0.1", "suffix": "", "routes": ["10.0.0.0/8"], "proxy": true, "why": "the same address written plainly"}
   ]
 }

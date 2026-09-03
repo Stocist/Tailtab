@@ -193,9 +193,9 @@ func TestLoopSurvivesBadInput(t *testing.T) {
 		`{"cmd":`,            // unframed JSON
 		`{"cmd":"nonsense"}`, // unknown command
 		`{}`,                 // no cmd
-		`{"cmd":"init","profileID":"../x","browser":"zen"}`,          // path traversal
-		`{"cmd":"init","profileID":"`+goodID+`"}`,                    // no browser
-		`{"cmd":"init","profileID":"`+goodID+`","browser":"safari"}`, // unknown browser
+		`{"cmd":"init","profileID":"../x","browser":"zen"}`,                 // path traversal
+		`{"cmd":"init","profileID":"`+goodID+`"}`,                           // no browser
+		`{"cmd":"init","profileID":"`+goodID+`","browser":"Safari Mobile"}`, // not a hostname label
 		`{"cmd":"up"}`, // before init
 		`{"cmd":"status"}`,
 	)

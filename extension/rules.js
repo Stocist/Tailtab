@@ -21,11 +21,38 @@ function tailtabInRoutes(h, routes) {
   function ipv4(m) {
     var n = 0;
     for (var i = 1; i <= 4; i++) {
+      // A leading zero is not an address the host's parser accepts either
+      // ("010.0.0.1"); refuse rather than guess octal or decimal.
+      if (m[i].length > 1 && m[i].charAt(0) === "0") return -1;
       var o = parseInt(m[i], 10);
       if (o > 255) return -1;
       n = n * 256 + o;
     }
     return n;
+  }
+  // Ranges no route may touch: this machine, link-local, multicast, the
+  // unspecified address and the reserved block. A route overlapping one is
+  // ignored, as the host ignores it (node.UsableRoute); routes broader than
+  // /8 (IPv4) or /16 (IPv6) are ignored too. Without this an approved but
+  // hostile route such as 127.0.0.0/8 would make the proxy dial local services.
+  var reserved4 = [[0, 8], [2130706432, 8], [2851995648, 16], [3758096384, 4], [4026531840, 4]];
+  function v4Overlaps(net, bits) {
+    for (var q = 0; q < reserved4.length; q++) {
+      var rb = Math.min(bits, reserved4[q][1]);
+      var sc = Math.pow(2, 32 - rb);
+      if (Math.floor(net / sc) === Math.floor(reserved4[q][0] / sc)) return true;
+    }
+    return false;
+  }
+  function v6Overlaps(n6, bits) {
+    // ::/128, ::1/128, fe80::/10, ff00::/8
+    var zero = true;
+    for (var z = 0; z < 8; z++) if (n6[z] !== 0) { zero = false; break; }
+    if (zero) return true; // a route starting at :: covers ::/128 (and, if narrow enough, ::1)
+    var top = n6[0];
+    if (bits <= 10 ? Math.floor(top / 64) === Math.floor(0xfe80 / 64) || (Math.floor(top / Math.pow(2, 16 - bits)) === Math.floor(0xfe80 / Math.pow(2, 16 - bits))) : Math.floor(top / 64) === Math.floor(0xfe80 / 64)) return true;
+    if (bits <= 8 ? Math.floor(top / Math.pow(2, 16 - bits)) === Math.floor(0xff00 / Math.pow(2, 16 - bits)) : Math.floor(top / 256) === 0xff) return true;
+    return false;
   }
   function ipv6(str) {
     // Returns eight 16-bit numbers, or null.
@@ -58,11 +85,12 @@ function tailtabInRoutes(h, routes) {
       if (!rm || !(bits >= 0 && bits <= 32) || String(bits) !== r[1]) continue;
       var net = ipv4(rm);
       if (net < 0) continue;
-      if (bits === 0) return true;
+      if (bits < 8) continue; // broader than any subnet route tailtab honours
       // Compare the top "bits" bits. Division keeps this in plain arithmetic:
-      // JavaScript's bitwise operators are 32-bit signed and a /0 route would
-      // shift by 32, which is a no-op.
+      // JavaScript's bitwise operators are 32-bit signed.
       var scale = Math.pow(2, 32 - bits);
+      var netMasked = Math.floor(net / scale) * scale;
+      if (v4Overlaps(netMasked, bits)) continue;
       if (Math.floor(ip / scale) === Math.floor(net / scale)) return true;
     }
     return false;
@@ -77,6 +105,8 @@ function tailtabInRoutes(h, routes) {
       if (!(bits6 >= 0 && bits6 <= 128) || String(bits6) !== r6[1]) continue;
       var n6 = ipv6(r6[0]);
       if (!n6) continue;
+      if (bits6 < 16) continue;
+      if (v6Overlaps(n6, bits6)) continue;
       var ok = true;
       for (var k = 0; k < 8 && ok; k++) {
         var take = bits6 - 16 * k;
@@ -124,6 +154,9 @@ function tailtabIsTailnetHost(host, tailnetDomain, routes) {
   // Tailscale's CGNAT range, 100.64.0.0/10.
   var v4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (v4) {
+    // An octet with a leading zero ("010.0.0.1") is not an address the host
+    // accepts; it is not a MagicDNS name either, so it stays DIRECT.
+    for (var oi = 1; oi <= 4; oi++) if (v4[oi].length > 1 && v4[oi].charAt(0) === "0") return false;
     var a = parseInt(v4[1], 10);
     var b = parseInt(v4[2], 10);
     if (a === 100 && b >= 64 && b <= 127) return true;
@@ -197,13 +230,19 @@ function tailtabExitModeProxies(host, routes) {
 
   var v4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (v4) {
+    for (var oi = 1; oi <= 4; oi++) if (v4[oi].length > 1 && v4[oi].charAt(0) === "0") return false;
     var a = parseInt(v4[1], 10);
     var b = parseInt(v4[2], 10);
     if (a === 100 && b >= 64 && b <= 127) return true; // the tailnet itself
+    // This machine, link-local and multicast come before the routes: no
+    // route may make the proxy dial them (the host refuses them too).
+    if (a === 0 || a === 127) return false;
+    if (a === 169 && b === 254) return false;
+    if (a >= 224) return false;
     // A routed subnet is still the tailnet's in exit mode: tailscaled sends it
     // to the subnet router, not the exit node.
     if (tailtabInRoutes(h, routes)) return true;
-    if (a === 0 || a === 10 || a === 127) return false; // this host, private, loopback
+    if (a === 10) return false; // private
     if (a === 172 && b >= 16 && b <= 31) return false; // 172.16/12
     if (a === 192 && b === 168) return false; // 192.168/16
     if (a === 169 && b === 254) return false; // link-local
@@ -213,14 +252,22 @@ function tailtabExitModeProxies(host, routes) {
 
   if (h.indexOf(":") !== -1) {
     if (h.indexOf("fd7a:115c:a1e0") === 0) return true; // the tailnet's ULA
-    if (tailtabInRoutes(h, routes)) return true; // a routed IPv6 subnet
-    if (h === "::1" || h === "::") return false;
-    // fe80::/10 is fe80 through febf; fc00::/7 is every fc and fd; ff00::/8 is
-    // multicast.
+    // Loopback in any spelling ("0:0:0:0:0:0:0:1" is ::1), the unspecified
+    // address, link-local and multicast come before the routes.
+    var hz = h.replace(/(^|:)0+(?=[0-9a-f])/g, "$1");
+    var hs = hz.split(":").filter(function (g) { return g !== ""; });
+    var allZero = true, lastOne = false;
+    for (var gi = 0; gi < hs.length; gi++) {
+      if (gi === hs.length - 1 && hs[gi] === "1") { lastOne = true; continue; }
+      if (hs[gi] !== "0") { allZero = false; break; }
+    }
+    if (allZero && (hs.length === 0 || hs.length === 8 || h.indexOf("::") !== -1)) return false; // :: or ::1
     if (h.indexOf("fe8") === 0 || h.indexOf("fe9") === 0) return false;
     if (h.indexOf("fea") === 0 || h.indexOf("feb") === 0) return false;
-    if (h.indexOf("fc") === 0 || h.indexOf("fd") === 0) return false;
     if (h.indexOf("ff") === 0) return false;
+    if (tailtabInRoutes(h, routes)) return true; // a routed IPv6 subnet
+    // fc00::/7 is every fc and fd: private, stays local.
+    if (h.indexOf("fc") === 0 || h.indexOf("fd") === 0) return false;
     return true;
   }
 

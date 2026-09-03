@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/netip"
 	"os"
+	"regexp"
 	"sync"
 
 	"github.com/Stocist/tailtab/internal/nm"
@@ -67,6 +68,11 @@ func (b *nodeBackend) statusChanged(st node.Status) {
 	p.SetSubnetRoutes(parseRoutes(st.SubnetRoutes))
 	b.h.pushStatus()
 }
+
+// browserNameRE bounds the browser token the extension sends. It only ever
+// becomes part of the node's hostname ("<host>-tailtab-<browser>"), so it must
+// be a short DNS-safe label: edge, chrome, brave, zen, firefox...
+var browserNameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,15}$`)
 
 // parseRoutes turns the status's CIDR strings back into prefixes for the guard,
 // dropping anything that does not parse: the guard must never widen on a
@@ -291,9 +297,9 @@ func (h *host) handleInit(req *nm.Request) error {
 		h.mu.Unlock()
 		return fmt.Errorf("profileID %q is not a lowercase UUID", req.ProfileID)
 	}
-	if req.Browser != "zen" && req.Browser != "edge" {
+	if !browserNameRE.MatchString(req.Browser) {
 		h.mu.Unlock()
-		return fmt.Errorf("browser %q is not %q or %q", req.Browser, "zen", "edge")
+		return fmt.Errorf("browser %q is not a short lowercase name", req.Browser)
 	}
 	if err := nm.ValidControlURL(req.ControlURL); err != nil {
 		h.mu.Unlock()

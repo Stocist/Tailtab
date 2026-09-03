@@ -18,7 +18,26 @@ const api = typeof browser !== "undefined" ? browser : chrome;
 
 // Firefox and Zen filter per request; Chromium installs a PAC script.
 const USE_ON_REQUEST = typeof api.proxy !== "undefined" && typeof api.proxy.onRequest !== "undefined";
-const BROWSER = USE_ON_REQUEST ? "zen" : "edge";
+
+// detectBrowser names the browser for the node's hostname
+// ("<host>-tailtab-<browser>"). Gecko browsers all present as Firefox, and Zen
+// was first, so they stay "zen"; Chromium browsers say who they are in
+// userAgentData.
+function detectBrowser() {
+  if (USE_ON_REQUEST) return "zen";
+  try {
+    const brands = (navigator.userAgentData && navigator.userAgentData.brands) || [];
+    const names = brands.map((b) => String(b.brand || "").toLowerCase());
+    if (names.some((n) => n.indexOf("edge") !== -1)) return "edge";
+    if (names.some((n) => n.indexOf("brave") !== -1)) return "brave";
+    if (names.some((n) => n.indexOf("google chrome") !== -1)) return "chrome";
+    if (names.some((n) => n.indexOf("chromium") !== -1)) return "chromium";
+  } catch (e) {
+    // fall through
+  }
+  return "edge";
+}
+const BROWSER = detectBrowser();
 const HOST_NAME = "com.stocist.tailtab";
 // Stamped by scripts/build.sh. The popup compares it with its own copy: a
 // mismatch means Chromium is running a background worker from an older build
@@ -261,20 +280,39 @@ async function applyProxy() {
   pushToPopups();
 }
 
-// clearProxy hands the setting back. It runs on any transition out of Running,
-// which includes the host process dying: onDisconnect reports Disconnected,
-// and that is a transition out of Running like any other.
-//
-// Clearing on a crash is deliberate, and is the reverse of the first cut.
-// Ordinary browsing is safe either way — the PAC only ever routes tailnet
-// hosts, so leaving it installed could not break github.com — but tailnet
-// requests are not: a PAC still pointing at a dead port makes every one of them
-// hang until Chromium gives up on the connection, while no PAC at all makes
-// them fail immediately. Failing fast is the better answer, and the setting is
-// reinstalled as soon as the host is back with its new port and token.
+// clearProxy hands the setting back. It runs when the user disconnects the
+// node: with the node stopped on purpose, tailnet names are nobody's business
+// and the browser is the user's again.
 async function clearProxy() {
   if (USE_ON_REQUEST) return;
   await new Promise((resolve) => chrome.proxy.settings.clear({ scope: "regular" }, resolve));
+}
+
+// parkProxy is what happens when the host is gone but should not be: a crash,
+// or a worker that has just started and has no host yet. The PAC stays, with
+// the same rules, pointed at a port nothing listens on. Tailnet requests then
+// fail at once (connection refused, no dialog, no hang), and, unlike clearing
+// the setting, a tailnet name is never handed to the public resolver in the
+// gap: a request for wiki.<tailnet>.ts.net going DIRECT would reveal the
+// tailnet to whoever answers DNS. In exit mode the parked PAC blocks
+// everything, which is the kill switch. applyProxy replaces it as soon as the
+// host is back.
+const PARKED_PORT = 1;
+async function parkProxy() {
+  if (USE_ON_REQUEST) return;
+  let pac;
+  try {
+    pac = tailtabBuildPac(PARKED_PORT, status.tailnet, exitMode(), status.subnetRoutes);
+  } catch (e) {
+    await clearProxy();
+    return;
+  }
+  await new Promise((resolve) =>
+    chrome.proxy.settings.set({ scope: "regular", value: { mode: "pac_script", pacScript: { data: pac, mandatory: false } } }, () => {
+      void chrome.runtime.lastError;
+      resolve();
+    })
+  );
 }
 
 // dropStaleProxy runs once, when the worker starts. Chromium keeps an
@@ -291,8 +329,10 @@ async function dropStaleProxy() {
     chrome.proxy.settings.get({}, (v) => resolve(v && v.levelOfControl))
   );
   if (control !== "controlled_by_this_extension") return;
-  console.warn("tailtab: dropping the proxy settings left by an earlier worker");
-  await clearProxy();
+  console.warn("tailtab: parking the proxy settings left by an earlier worker");
+  // Parked, not cleared: the stale port must go, but tailnet names must not
+  // start leaking to the public resolver while the new host comes up.
+  await parkProxy();
 }
 
 // ------------------------------------------------------------- native host IO
@@ -466,7 +506,11 @@ function setStatus(next) {
       applyProxy();
     }
   } else if (wasRunning) {
-    clearProxy();
+    // Stopped by the user: the browser is theirs again. Anything else that
+    // took the node down (host crash, switch in flight) keeps the rules, on a
+    // dead port, so nothing leaks while it recovers.
+    if (next.state === "Stopped") clearProxy();
+    else parkProxy();
   }
   pushToPopups();
 }

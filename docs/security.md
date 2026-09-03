@@ -18,7 +18,7 @@ curl -x http://127.0.0.1:<port> -U tailtab:<token> http://server/    # proxied
 
 ## The destination guard
 
-The listener only dials what the tailnet can serve: single-label MagicDNS names, `*.ts.net`, this node's own MagicDNS suffix (validated as a real multi-label DNS name and matched only on a label boundary), addresses in `100.64.0.0/10` or `fd7a:115c:a1e0::/48`, and addresses inside a subnet a peer routes for the tailnet (the approved primary routes reported by the node; a malformed route is dropped, never widened). Everything else is refused with `403` (HTTP) or a SOCKS failure reply.
+The listener only dials what the tailnet can serve: single-label MagicDNS names, `*.ts.net`, this node's own MagicDNS suffix (validated as a real multi-label DNS name and matched only on a label boundary), addresses in `100.64.0.0/10` or `fd7a:115c:a1e0::/48`, and addresses inside a subnet a peer routes for the tailnet (the approved primary routes reported by the node; a malformed route is dropped, never widened, and so is any route broader than /8 or /16 or overlapping loopback, link-local, multicast or the unspecified address). Loopback, link-local and multicast are refused before the routes are consulted, whatever they say. Everything else is refused with `403` (HTTP) or a SOCKS failure reply.
 
 While an exit node is selected *and online*, the guard flips to allow any public destination and refuse loopback, link-local and private address space, which would otherwise be dialled on the exit node's own network. Routed subnets stay allowed in exit mode: they belong to the tailnet, not to the exit node's LAN. Selected but offline keeps the tailnet-only guard, so traffic is blocked rather than sent out of the machine directly while the browser believes it is behind the exit node.
 
@@ -30,6 +30,10 @@ While an exit node is selected *and online*, the guard flips to allow any public
 ## Logging
 
 `tsnet` uploads its logs to `log.tailscale.com` and there is no supported way to turn that off: the uploader is built unconditionally and neither documented off-switch applies to `tsnet`. Tailtab does not work around it. The host's own logging goes to stderr and never includes the proxy credential.
+
+## Windows without a host
+
+While the browser's worker has no host, after a crash or at worker start, the proxy setting is parked on a dead port rather than cleared, so a tailnet name is never resolved by the public resolver in that window. Only a disconnect the user asks for clears the setting.
 
 ## Known gaps
 

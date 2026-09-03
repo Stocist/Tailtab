@@ -23,4 +23,13 @@ Not offered from the popup. Tailscale's profile deletion reports success even fo
 
 ## A different coordination server
 
-Tailtab talks to Tailscale's coordination server by default. A self-hosted one such as Headscale goes in the settings page (the **Settings** link in the popup footer, or the extension's options page). It applies to the *next* login: the first one this profile makes, or the next *Add account…*. Accounts that are already logged in keep the server they joined, which is also how Tailscale's own clients behave, and the popup shows a **Control server** line whenever the active account is not on Tailscale's. The URL is validated in the settings page and again by the host: http or https, a host, no credentials, no query or fragment.
+Tailtab talks to Tailscale's coordination server by default. A self-hosted one such as Headscale goes in the settings page (the **Settings** link in the popup footer, or the extension's options page).
+
+The server is chosen **per browser profile, at the first login**, and pinned from then on in the node's state directory. The reason is a `tsnet` property: it rewrites the active account's preferences, coordination server included, on every start, so Tailtab has to pass the same server every time or an account would be silently repointed. Consequences:
+
+- The setting applies to a browser profile that has not logged in yet. Change it before the first login, or in a fresh browser profile.
+- Every account in one browser profile uses that profile's server. *Add account…* against a different server is refused with a message saying so; use another browser profile for it.
+- If the setting differs from what the profile is pinned to, the popup says so in its warnings rather than applying it.
+- The popup shows a **Control server** line whenever the active account is not on Tailscale's.
+
+The URL is validated in the settings page and again by the host: http or https, a host, no credentials, no query or fragment.

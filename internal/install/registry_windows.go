@@ -27,3 +27,13 @@ func deleteRegistryKey(key string) error {
 	}
 	return err
 }
+
+// registryKeyExists reports whether HKCU\<key> exists.
+func registryKeyExists(key string) bool {
+	k, err := registry.OpenKey(registry.CURRENT_USER, key, registry.QUERY_VALUE)
+	if err != nil {
+		return false
+	}
+	k.Close()
+	return true
+}

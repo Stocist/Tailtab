@@ -121,6 +121,12 @@ func allowExitHost(host string, routes []netip.Prefix) error {
 		if tailscaleV4.Contains(addr) || tailscaleV6.Contains(addr) {
 			return nil
 		}
+		// This machine, link-local and multicast are never dialled, whatever
+		// the routes say: a route covering them would be an SSRF onto local
+		// services. Checked before the routes on purpose.
+		if isLocalOnly(addr) {
+			return fmt.Errorf("%w: %s is local to this machine", ErrNotTailnet, h)
+		}
 		// A subnet a peer routes is part of the tailnet even in exit mode:
 		// tailscaled itself sends it to the subnet router, not the exit node.
 		if inRoutes(addr, routes) {
@@ -135,12 +141,16 @@ func allowExitHost(host string, routes []netip.Prefix) error {
 		return fmt.Errorf("%w: %s is loopback", ErrNotTailnet, h)
 	}
 	// A single label is still a MagicDNS short name; everything else is a
-	// public name, which is exactly what the exit node is for.
-	if numericHost.MatchString(h) {
+	// public name, which is exactly what the exit node is for. Digits and
+	// dots alone ("010.0.0.1", which netip refuses for its leading zero) are
+	// an address in disguise, not a name.
+	if numericHost.MatchString(h) || dottedNumeric.MatchString(h) {
 		return fmt.Errorf("%w: %s is a numeric address", ErrNotTailnet, h)
 	}
 	return nil
 }
+
+var dottedNumeric = regexp.MustCompile(`^[0-9.]+$`)
 
 // allowTailnetHost reports whether host is something the tailnet can serve.
 //
@@ -168,6 +178,10 @@ func allowTailnetHost(host, suffix string, routes []netip.Prefix) error {
 		addr = addr.Unmap()
 		if tailscaleV4.Contains(addr) || tailscaleV6.Contains(addr) {
 			return nil
+		}
+		// Never this machine, link-local or multicast, routes or no routes.
+		if isLocalOnly(addr) {
+			return fmt.Errorf("%w: %s is local to this machine", ErrNotTailnet, h)
 		}
 		// An address inside a subnet a peer routes for the tailnet.
 		if inRoutes(addr, routes) {
@@ -200,14 +214,65 @@ func allowTailnetHost(host, suffix string, routes []netip.Prefix) error {
 	return nil
 }
 
-// inRoutes reports whether addr falls inside any of the routed subnets.
+// localOnlyRanges are the addresses the proxy never dials whatever the routes
+// say: loopback, link-local (cloud metadata endpoints live there), multicast,
+// the unspecified address and the reserved block.
+var localOnlyRanges = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("127.0.0.0/8"),
+	netip.MustParsePrefix("169.254.0.0/16"),
+	netip.MustParsePrefix("224.0.0.0/4"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("::/128"),
+	netip.MustParsePrefix("::1/128"),
+	netip.MustParsePrefix("fe80::/10"),
+	netip.MustParsePrefix("ff00::/8"),
+}
+
+func isLocalOnly(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	for _, p := range localOnlyRanges {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+// inRoutes reports whether addr falls inside any of the routed subnets. Routes
+// broader than /8 (IPv4) or /16 (IPv6), or overlapping a local-only range, are
+// ignored here too: the node filters them (node.UsableRoute), and the guard
+// must not depend on that having happened.
 func inRoutes(addr netip.Addr, routes []netip.Prefix) bool {
 	for _, r := range routes {
+		if !usableRoute(r) {
+			continue
+		}
 		if r.Contains(addr) {
 			return true
 		}
 	}
 	return false
+}
+
+func usableRoute(r netip.Prefix) bool {
+	if !r.IsValid() {
+		return false
+	}
+	floor := 8
+	if r.Addr().Unmap().Is6() && !r.Addr().Is4In6() {
+		floor = 16
+	}
+	if r.Bits() < floor {
+		return false
+	}
+	r = r.Masked()
+	for _, p := range localOnlyRanges {
+		if r.Overlaps(p) {
+			return false
+		}
+	}
+	return true
 }
 
 // numericHost matches the decimal and hexadecimal forms of a bare IPv4 address.

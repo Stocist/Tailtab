@@ -693,25 +693,117 @@ func TestAddAccountSetsTheControlServerBeforeLogin(t *testing.T) {
 	n.hostname = "mac-tailtab-edge"
 	var order []string
 	n.newProfile = func(context.Context) error { order = append(order, "new"); return nil }
+	n.dir = t.TempDir()
 	n.editPrefs = func(_ context.Context, mp *ipn.MaskedPrefs) (*ipn.Prefs, error) {
-		if mp.ControlURLSet {
+		if mp.HostnameSet {
+			order = append(order, "prefs:"+mp.Prefs.ControlURL)
+		} else if mp.ControlURLSet {
 			order = append(order, "control:"+mp.Prefs.ControlURL)
-		} else {
-			order = append(order, "prefs")
 		}
 		return &mp.Prefs, nil
 	}
+	// A profile with no accounts may choose its server; it is pinned from then on.
 	if err := n.AddAccount("https://headscale.example.com"); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := strings.Join(order, ","), "new,control:https://headscale.example.com,prefs"; got != want {
+	if got, want := strings.Join(order, ","), "new,control:https://headscale.example.com,prefs:https://headscale.example.com"; got != want {
 		t.Fatalf("call order %q, want %q", got, want)
 	}
+	if readStateFile(n.dir, controlURLFile) != "https://headscale.example.com" {
+		t.Fatal("the coordination server was not pinned")
+	}
+	// Once accounts exist, a different server is refused rather than applied.
+	n.st.Accounts = []Account{{ID: "p1", Name: "a", Active: true}}
 	order = nil
+	if err := n.AddAccount("https://other.example.com"); err == nil {
+		t.Fatal("a different server was accepted for a profile that already has accounts")
+	}
+	if len(order) != 0 {
+		t.Fatalf("a refused add still touched the backend: %v", order)
+	}
+	// The pinned server is used for every further account, asked for or not.
 	if err := n.AddAccount(""); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := strings.Join(order, ","), "new,prefs"; got != want {
-		t.Fatalf("without a control URL: %q, want %q", got, want)
+	if got, want := strings.Join(order, ","), "new,control:https://headscale.example.com,prefs:https://headscale.example.com"; got != want {
+		t.Fatalf("with the pin: %q, want %q", got, want)
+	}
+}
+
+func TestPinControlURL(t *testing.T) {
+	dir := t.TempDir()
+	eff, note, err := pinControlURL(dir, "")
+	if err != nil || eff != "" || note != "" {
+		t.Fatalf("no setting, no pin: %q %q %v", eff, note, err)
+	}
+	eff, note, err = pinControlURL(dir, "https://hs.example.com")
+	if err != nil || eff != "https://hs.example.com" || note != "" {
+		t.Fatalf("first setting pins: %q %q %v", eff, note, err)
+	}
+	// A later start with the setting cleared keeps the pin (B1: clearing the
+	// setting must not repoint the account at Tailscale).
+	eff, note, err = pinControlURL(dir, "")
+	if err != nil || eff != "https://hs.example.com" || note != "" {
+		t.Fatalf("cleared setting keeps the pin: %q %q %v", eff, note, err)
+	}
+	// A different setting is reported, not applied.
+	eff, note, err = pinControlURL(dir, "https://other.example.com")
+	if err != nil || eff != "https://hs.example.com" || note == "" {
+		t.Fatalf("different setting: %q %q %v", eff, note, err)
+	}
+}
+
+func TestUsableRoute(t *testing.T) {
+	ok := []string{"192.168.1.0/24", "10.0.0.0/8", "8.0.0.0/8", "fd00:1:2::/64", "2001:db8::/32", "192.168.1.7/32"}
+	bad := []string{"0.0.0.0/0", "0.0.0.0/1", "128.0.0.0/1", "127.0.0.0/8", "127.0.0.0/24", "169.254.0.0/16", "224.0.0.0/8", "0.0.0.0/8", "::/0", "::/1", "::1/128", "fe80::/10", "fe80::/64", "ff00::/8", "fd00::/8"}
+	for _, c := range ok {
+		if !UsableRoute(netip.MustParsePrefix(c)) {
+			t.Errorf("UsableRoute(%s) = false, want true", c)
+		}
+	}
+	for _, c := range bad {
+		if UsableRoute(netip.MustParsePrefix(c)) {
+			t.Errorf("UsableRoute(%s) = true, want false", c)
+		}
+	}
+}
+
+func TestExitNodeSelectionIsRemembered(t *testing.T) {
+	n, _, _ := newTestNode(t)
+	n.dir = t.TempDir()
+	n.st.ExitNodes = []ExitNode{{ID: "n1", Name: "server", Online: true}}
+	var set []string
+	n.editPrefs = func(_ context.Context, mp *ipn.MaskedPrefs) (*ipn.Prefs, error) {
+		if mp.ExitNodeIDSet {
+			set = append(set, string(mp.Prefs.ExitNodeID))
+		}
+		return &mp.Prefs, nil
+	}
+	if err := n.SetExitNode("n1"); err != nil {
+		t.Fatal(err)
+	}
+	if readStateFile(n.dir, exitNodeFile) != "n1" {
+		t.Fatal("the selection was not written down")
+	}
+	if err := n.SetExitNode(""); err != nil {
+		t.Fatal(err)
+	}
+	if readStateFile(n.dir, exitNodeFile) != "" {
+		t.Fatal("clearing the selection left the file behind")
+	}
+	if strings.Join(set, ",") != "n1," {
+		t.Fatalf("prefs edits = %v", set)
+	}
+}
+
+func TestStatusKeepsOurHostnameBeforeLogin(t *testing.T) {
+	st := &Status{Hostname: "laptop-tailtab-edge"}
+	applyIPNStatus(st, &ipnstate.Status{BackendState: "NeedsLogin", Self: &ipnstate.PeerStatus{HostName: "Laptop.local"}})
+	if st.Hostname != "laptop-tailtab-edge" {
+		t.Fatalf("hostname = %q, the OS name leaked through before login", st.Hostname)
+	}
+	applyIPNStatus(st, &ipnstate.Status{BackendState: "Running", Self: &ipnstate.PeerStatus{HostName: "Laptop.local", DNSName: "laptop-tailtab-edge.tail1a2b3c.ts.net."}})
+	if st.Hostname != "laptop-tailtab-edge" {
+		t.Fatalf("hostname = %q after login", st.Hostname)
 	}
 }

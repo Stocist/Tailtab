@@ -64,6 +64,12 @@
     {"host": "192.168.2.10", "routes": ["192.168.1.0/24"], "proxy": false, "why": "unrouted private space stays local"},
     {"host": "10.42.7.1", "routes": ["10.42.0.0/16"], "proxy": true, "why": "routed /16"},
     {"host": "fd00:1:2::5", "routes": ["fd00:1:2::/64"], "proxy": true, "why": "routed IPv6 ULA"},
-    {"host": "fd00:9::1", "routes": ["fd00:1:2::/64"], "proxy": false, "why": "unrouted ULA stays local"}
+    {"host": "fd00:9::1", "routes": ["fd00:1:2::/64"], "proxy": false, "why": "unrouted ULA stays local"},
+    {"host": "127.0.0.1", "routes": ["127.0.0.0/8"], "proxy": false, "why": "loopback is never dialled through the proxy, routed or not (B2)"},
+    {"host": "0:0:0:0:0:0:0:1", "routes": [], "proxy": false, "why": "IPv6 loopback in long form (N1)"},
+    {"host": "::1", "routes": ["::/1"], "proxy": false, "why": "a route covering IPv6 loopback is ignored"},
+    {"host": "169.254.169.254", "routes": ["169.254.0.0/16"], "proxy": false, "why": "link-local stays local even when routed (N2)"},
+    {"host": "010.0.0.1", "routes": ["10.0.0.0/8"], "proxy": false, "why": "a leading-zero octet is not an address (N1)"},
+    {"host": "8.8.8.8", "routes": ["0.0.0.0/1"], "proxy": true, "why": "public in exit mode regardless of the ignored route"}
   ]
 }

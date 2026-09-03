@@ -9,7 +9,7 @@ Two behaviours worth knowing before you rely on it:
 - **An offline exit node blocks browsing rather than falling back.** The popup says *Connected, exit node offline — browsing blocked*. The alternative is putting your traffic back on the local connection at the moment you were relying on it not being there. Pick **None** to browse normally again.
 - **A dead host process blocks browsing too, while an exit node is selected.** The PAC has no direct fallback, so until the extension notices the host is gone and clears the setting, tailnet-bound and public traffic alike fail. It is the same kill-switch behaviour a VPN gives you, and it resolves itself when the extension reconnects.
 
-Selection is stored by the exit node's stable node ID and survives restarts. An exit node that disappears from the tailnet entirely still shows as selected-but-offline rather than as "none".
+Selection is stored by the exit node's stable node ID, remembered by Tailtab in the node's state directory (because `tsnet` resets the preferences on every start), and put back on the next start. An exit node that disappears from the tailnet entirely still shows as selected-but-offline rather than as "none".
 
 ## DNS
 

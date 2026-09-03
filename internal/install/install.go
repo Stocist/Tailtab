@@ -68,6 +68,10 @@ type Target struct {
 	// only; empty elsewhere. Windows browsers find hosts through the
 	// registry, not a directory.
 	Registry string
+	// Probe is an HKCU key whose presence means the browser is installed,
+	// for Windows targets that are only registered when it is (Create is
+	// false). Empty means always register.
+	Probe string
 
 	manifest manifest
 }
@@ -144,16 +148,18 @@ func dirs(goos, home, localAppData string) []Target {
 		return []Target{
 			{Browser: "Microsoft Edge", Dir: dir, File: chromium, Create: true, Registry: `Software\Microsoft\Edge\NativeMessagingHosts\` + HostName},
 			{Browser: "Zen and Firefox", Dir: dir, File: gecko, Create: true, Registry: `Software\Mozilla\NativeMessagingHosts\` + HostName},
-			{Browser: "Google Chrome", Dir: dir, File: chromium, Create: true, Registry: `Software\Google\Chrome\NativeMessagingHosts\` + HostName},
-			{Browser: "Chromium", Dir: dir, File: chromium, Create: true, Registry: `Software\Chromium\NativeMessagingHosts\` + HostName},
-			{Browser: "Brave", Dir: dir, File: chromium, Create: true, Registry: `Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\` + HostName},
+			// Bonus browsers: registered only when the browser has left its
+			// own key behind, so an absent browser gets no dangling key.
+			{Browser: "Google Chrome", Dir: dir, File: chromium, Registry: `Software\Google\Chrome\NativeMessagingHosts\` + HostName, Probe: `Software\Google\Chrome`},
+			{Browser: "Chromium", Dir: dir, File: chromium, Registry: `Software\Chromium\NativeMessagingHosts\` + HostName, Probe: `Software\Chromium`},
+			{Browser: "Brave", Dir: dir, File: chromium, Registry: `Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\` + HostName, Probe: `Software\BraveSoftware\Brave-Browser`},
 		}
 	}
 	return nil
 }
 
 // windowsAbsRE matches a drive-letter or UNC path.
-var windowsAbsRE = regexp.MustCompile(`^(?:[A-Za-z]:\\|\\\\)`)
+var windowsAbsRE = regexp.MustCompile(`^(?:[A-Za-z]:[\\/]|\\\\)`)
 
 // isAbs is filepath.IsAbs for the target platform rather than the running
 // one, so a Windows layout can be validated (and tested) from anywhere.
@@ -219,8 +225,11 @@ func Install(opts Options) ([]string, error) {
 	var written []string
 	wroteFile := map[string]bool{}
 	for _, t := range targets {
+		if t.Probe != "" && !registryKeyExists(t.Probe) {
+			continue // that browser is not installed (Windows)
+		}
 		if _, err := os.Stat(t.Dir); err != nil {
-			if !t.Create {
+			if !t.Create && t.Registry == "" {
 				continue // that browser is not installed
 			}
 			if err := os.MkdirAll(t.Dir, 0o755); err != nil {

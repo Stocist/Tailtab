@@ -13,8 +13,6 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    env:
-      TAILTAB_VERSION: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,8 +27,11 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Strip the v from the tag
-        run: echo "TAILTAB_VERSION=${TAILTAB_VERSION#v}" >> "$GITHUB_ENV"
+      # The extension manifests need "0.2.0", not "v0.2.0": a browser refuses a
+      # version with a letter in it. Set once here for every later step; a
+      # job-level env would shadow it.
+      - name: Version from the tag
+        run: echo "TAILTAB_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
 
       - name: Tests
         run: ./scripts/test.sh
