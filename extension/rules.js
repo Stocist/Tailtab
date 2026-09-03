@@ -55,6 +55,26 @@ function tailtabInRoutes(h, routes) {
     if (Math.floor(n6[0] / 256) === 0xff) return true; // ff00::/8
     return false;
   }
+  function ipv6(str) {
+    // Returns eight 16-bit numbers, or null.
+    if (str.indexOf(".") !== -1) return null; // mixed notation is not used here
+    var halves = str.split("::");
+    if (halves.length > 2) return null;
+    var head = halves[0] ? halves[0].split(":") : [];
+    var tail = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+    if (halves.length === 1 && head.length !== 8) return null;
+    if (halves.length === 2 && head.length + tail.length > 7) return null;
+    var out = [];
+    var groups = head.concat([]);
+    var fill = halves.length === 2 ? 8 - head.length - tail.length : 0;
+    for (var f = 0; f < fill; f++) groups.push("0");
+    groups = groups.concat(tail);
+    for (var g = 0; g < groups.length; g++) {
+      if (!/^[0-9a-f]{1,4}$/.test(groups[g])) return null;
+      out.push(parseInt(groups[g], 16));
+    }
+    return out.length === 8 ? out : null;
+  }
   if (v4) {
     var ip = ipv4(v4);
     if (ip < 0) return false;
