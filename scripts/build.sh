@@ -13,15 +13,14 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
 go="${GO:-go}"
-# Stamp the embedded Tailscale version so the admin console and the login page
-# show "1.102.3-tailtab-<commit>" instead of the "-dev" string tsnet reports for
-# an unstamped build. The version is whatever go.mod pins.
-ts_version="$("$go" list -m -f '{{.Version}}' tailscale.com)"
-ts_version="${ts_version#v}"
+# The version stamp lives in scripts/ldflags.sh so the release workflow builds
+# the same thing. TAILTAB_VERSION (a release tag like 0.1.0) overrides the
+# commit-based build id everywhere: the host, the extension files and the
+# manifest version.
+ldflags="$("$root/scripts/ldflags.sh")"
 commit="$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-ldflags="-X tailscale.com/version.longStamp=${ts_version}-tailtab-${commit} -X tailscale.com/version.shortStamp=${ts_version}"
-echo "building bin/tailtab (tailscale ${ts_version}-tailtab-${commit})"
-"$go" build -ldflags "$ldflags" -o bin/tailtab ./cmd/tailtab
+echo "building ${OUT:-bin/tailtab} ($(echo "$ldflags" | sed -E "s/.*longStamp=([^ ]+).*/\\1/"))"
+"$go" build -ldflags "$ldflags" -o "${OUT:-bin/tailtab}" ./cmd/tailtab
 
 src="extension"
 dist="$src/dist"
@@ -34,8 +33,13 @@ shared=(background.js rules.js popup.html popup.js)
 # extension's background worker cached across browser restarts; a changed
 # manifest version makes it treat the reload as an update and start fresh, and
 # the popup compares its own id with the worker's to say when they differ.
-build_id="${commit}$(git -C "$root" diff --quiet 2>/dev/null || echo -dirty)"
-ext_version="0.1.$(git -C "$root" rev-list --count HEAD 2>/dev/null || echo 0)"
+if [ -n "${TAILTAB_VERSION:-}" ]; then
+  build_id="$TAILTAB_VERSION"
+  ext_version="$TAILTAB_VERSION"
+else
+  build_id="${commit}$(git -C "$root" diff --quiet 2>/dev/null || echo -dirty)"
+  ext_version="0.1.$(git -C "$root" rev-list --count HEAD 2>/dev/null || echo 0)"
+fi
 
 rm -rf "$dist"
 for target in chromium firefox; do

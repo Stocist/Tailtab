@@ -1,0 +1,100 @@
+name: Release
+
+# Pushing a tag like v0.1.0 builds the host for macOS, zips both extensions,
+# signs the Firefox one through AMO when the secrets are set, and publishes a
+# GitHub release with everything attached.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      TAILTAB_VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Strip the v from the tag
+        run: echo "TAILTAB_VERSION=${TAILTAB_VERSION#v}" >> "$GITHUB_ENV"
+
+      - name: Tests
+        run: ./scripts/test.sh
+
+      - name: Build extensions and the native host
+        run: ./scripts/build.sh
+
+      - name: Cross-compile the host for macOS
+        run: |
+          set -euo pipefail
+          ldflags="$(./scripts/ldflags.sh)"
+          mkdir -p release
+          for arch in arm64 amd64; do
+            CGO_ENABLED=0 GOOS=darwin GOARCH="$arch" \
+              go build -trimpath -ldflags "$ldflags" -o "release/tailtab-darwin-${arch}" ./cmd/tailtab
+          done
+
+      - name: Zip the extensions
+        run: |
+          set -euo pipefail
+          (cd extension/dist/chromium && zip -qr "../../../release/tailtab-chromium-${TAILTAB_VERSION}.zip" .)
+          (cd extension/dist/firefox && zip -qr "../../../release/tailtab-firefox-${TAILTAB_VERSION}.zip" .)
+
+      - name: Sign the Firefox extension through AMO (unlisted)
+        env:
+          AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+          AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "$AMO_JWT_ISSUER" ] || [ -z "$AMO_JWT_SECRET" ]; then
+            echo "AMO secrets not set; skipping signing (the unsigned zip is still attached)."
+            exit 0
+          fi
+          npx --yes web-ext@8 sign \
+            --source-dir extension/dist/firefox \
+            --artifacts-dir release/xpi \
+            --channel unlisted \
+            --api-key "$AMO_JWT_ISSUER" \
+            --api-secret "$AMO_JWT_SECRET"
+          mv release/xpi/*.xpi "release/tailtab-${TAILTAB_VERSION}.xpi"
+          rmdir release/xpi
+
+      - name: Checksums
+        run: (cd release && sha256sum * > SHA256SUMS)
+
+      - name: Release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          {
+            cat .github/release-notes.md | sed "s/<version>/${TAILTAB_VERSION}/g"
+            echo
+            echo "## Changes"
+            echo
+            gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+              -f tag_name="${GITHUB_REF_NAME}" --jq .body | sed '1{/^## What/d}'
+          } > release-notes.md
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" release/* \
+            --title "Tailtab ${TAILTAB_VERSION}" \
+            --notes-file release-notes.md \
+            --verify-tag
