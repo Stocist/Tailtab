@@ -26,7 +26,7 @@
 
 - **One node per browser profile.** Every profile gets its own machine on the tailnet, named `<host>-tailtab-<browser>`, with its own key and state. Nothing else on the computer gets touched.
 
-- **Split tunnel by default.** Only tailnet traffic goes through Tailtab. That includes MagicDNS names, `*.ts.net`, your tailnet's own suffix, and the `100.64.0.0/10` / `fd7a:115c:a1e0::/48` ranges. Everything else goes out normally, so regular browsing does not depend on Tailtab being connected.
+- **Split tunnel by default.** Only tailnet traffic goes through Tailtab. That includes MagicDNS names, `*.ts.net`, your tailnet's own suffix, the `100.64.0.0/10` / `fd7a:115c:a1e0::/48` ranges, and any subnet a peer routes for the tailnet. Everything else goes out normally, so regular browsing does not depend on Tailtab being connected.
 
 - **Exit nodes per profile.** You can pick an exit node for one browser profile and send that profile's web traffic through it while the rest of the machine carries on normally. If that exit node disappears, Tailtab blocks the traffic instead of silently letting it leak out directly.
 

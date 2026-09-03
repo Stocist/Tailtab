@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -96,6 +97,11 @@ type Status struct {
 	Accounts []Account
 	// Peers is every machine on the current tailnet, sorted by name.
 	Peers []Peer
+	// SubnetRoutes is every subnet a peer currently routes for this tailnet
+	// (its approved primary routes), as CIDRs, sorted. Addresses inside them
+	// reach the tailnet through that peer, so the browser's rules and the
+	// host's guard both treat them as tailnet destinations.
+	SubnetRoutes []string
 }
 
 // equal reports whether two snapshots are the same. Status holds a slice, so it
@@ -113,7 +119,8 @@ func (s Status) equal(o Status) bool {
 		slices.Equal(s.ExitNodes, o.ExitNodes) &&
 		slices.Equal(s.Warnings, o.Warnings) &&
 		slices.Equal(s.Accounts, o.Accounts) &&
-		slices.Equal(s.Peers, o.Peers)
+		slices.Equal(s.Peers, o.Peers) &&
+		slices.Equal(s.SubnetRoutes, o.SubnetRoutes)
 }
 
 // Node wraps a tsnet.Server for a single browser profile.
@@ -254,6 +261,12 @@ func (n *Node) Start(profileID, browser string) error {
 	n.switchProfile = lc.SwitchProfile
 	n.newProfile = lc.SwitchToEmptyProfile
 	n.mu.Unlock()
+
+	// tsnet sets its own prefs at start and nothing else; accepting subnet
+	// routes is ours to add, and it has to be on before the netmap arrives.
+	if err := n.acceptRoutes(context.Background()); err != nil {
+		log.Printf("accepting subnet routes: %v", err)
+	}
 
 	// NotifyInitialStatus is what carries the tailnet name and self IP:
 	// Notify.NetMap is Windows-only as of v1.102.3 and is always nil here
@@ -491,7 +504,43 @@ func applyIPNStatus(st *Status, s *ipnstate.Status) {
 	}
 	applyExitNodes(st, s)
 	applyPeers(st, s)
+	applySubnetRoutes(st, s)
 }
+
+// applySubnetRoutes collects the subnets peers route for this tailnet. Only
+// primary routes count: those are approved in the admin console and currently
+// served. Default routes belong to exit nodes and are handled as exit mode, not
+// as subnets.
+func applySubnetRoutes(st *Status, s *ipnstate.Status) {
+	seen := map[string]bool{}
+	var routes []string
+	for _, p := range s.Peer {
+		if p == nil || p.PrimaryRoutes == nil {
+			continue
+		}
+		for _, r := range p.PrimaryRoutes.AsSlice() {
+			if !r.IsValid() || r.Bits() == 0 {
+				continue
+			}
+			r = r.Masked()
+			if tailscaleCGNAT.Contains(r.Addr()) || tailscaleULA.Contains(r.Addr()) {
+				continue // the tailnet's own addresses are already covered
+			}
+			k := r.String()
+			if !seen[k] {
+				seen[k] = true
+				routes = append(routes, k)
+			}
+		}
+	}
+	slices.Sort(routes)
+	st.SubnetRoutes = routes
+}
+
+var (
+	tailscaleCGNAT = netip.MustParsePrefix("100.64.0.0/10")
+	tailscaleULA   = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
+)
 
 // applyExitNodes copies the exit-node offers and the state of the selected one
 // out of a status snapshot.
@@ -752,6 +801,20 @@ func (n *Node) requestLogin(ctx context.Context) error {
 	return nil
 }
 
+// acceptRoutes turns on RouteAll, so subnets advertised by peers are routed.
+func (n *Node) acceptRoutes(ctx context.Context) error {
+	n.mu.Lock()
+	edit := n.editPrefs
+	n.mu.Unlock()
+	if edit == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	_, err := edit(ctx, &ipn.MaskedPrefs{Prefs: ipn.Prefs{RouteAll: true}, RouteAllSet: true})
+	return err
+}
+
 // reapplyPrefs restores the prefs tsnet set at Start and a logout wiped: the
 // hostname and WantRunning. It is what keeps a re-login from registering the
 // node under the machine's own name.
@@ -764,9 +827,13 @@ func (n *Node) reapplyPrefs(ctx context.Context) error {
 		return nil
 	}
 	if _, err := edit(ctx, &ipn.MaskedPrefs{
-		Prefs:          ipn.Prefs{Hostname: hostname, WantRunning: true},
+		// RouteAll accepts the subnet routes peers advertise; without it the
+		// node never learns the route and a LAN address behind a subnet
+		// router is unreachable however the browser routes it.
+		Prefs:          ipn.Prefs{Hostname: hostname, WantRunning: true, RouteAll: true},
 		HostnameSet:    true,
 		WantRunningSet: true,
+		RouteAllSet:    true,
 	}); err != nil {
 		return fmt.Errorf("restoring the node's prefs before login: %w", err)
 	}

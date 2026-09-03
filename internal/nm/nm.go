@@ -127,6 +127,9 @@ type Event struct {
 	Accounts []Account `json:"accounts,omitempty"`
 	// Peers is the tailnet's machines, for the popup's search box.
 	Peers []Peer `json:"peers,omitempty"`
+	// SubnetRoutes is every subnet a peer routes for this tailnet, as CIDRs.
+	// The browser's rules send addresses inside them to the proxy.
+	SubnetRoutes []string `json:"subnetRoutes,omitempty"`
 }
 
 // StatusEvent returns an empty status event, ready to be filled in.

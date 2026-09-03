@@ -36,7 +36,7 @@ const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 
 // The last status event from the host, and the only thing the UI renders.
-let status = { state: "Disconnected", error: "", proxyPort: 0, tailnet: "", warnings: [], exitNode: "", exitNodes: [], exitNodeActive: false, accounts: [], peers: [] };
+let status = { state: "Disconnected", error: "", proxyPort: 0, tailnet: "", warnings: [], exitNode: "", exitNodes: [], exitNodeActive: false, accounts: [], peers: [], subnetRoutes: [] };
 
 // exitMode reports whether the browser should send everything through the
 // proxy. It keys off the exit node being SELECTED, not on it being active: if
@@ -92,8 +92,8 @@ if (USE_ON_REQUEST) {
         return { type: "direct" };
       }
       const proxied = exitMode()
-        ? tailtabExitModeProxies(host)
-        : tailtabIsTailnetHost(host, status.tailnet);
+        ? tailtabExitModeProxies(host, status.subnetRoutes)
+        : tailtabIsTailnetHost(host, status.tailnet, status.subnetRoutes);
       if (!proxied) return { type: "direct" };
       // proxyDNS keeps MagicDNS names unresolved until they reach the node.
       // Firefox can authenticate SOCKS5 in-protocol, so the credential rides
@@ -225,7 +225,7 @@ async function applyProxy() {
   // to say so in the popup than to install nothing and report Connected.
   let pac;
   try {
-    pac = tailtabBuildPac(port, status.tailnet, exitMode());
+    pac = tailtabBuildPac(port, status.tailnet, exitMode(), status.subnetRoutes);
   } catch (e) {
     proxyProblem = "tailtab could not build a proxy script, so tailnet traffic is not routed: " + e.message;
     pushToPopups();
@@ -405,7 +405,17 @@ function onHostMessage(msg) {
     // the popup's account switcher and machine search.
     accounts: Array.isArray(msg.accounts) ? msg.accounts : [],
     peers: Array.isArray(msg.peers) ? msg.peers : [],
+    // Subnets peers route for the tailnet; part of the routing rules.
+    subnetRoutes: Array.isArray(msg.subnetRoutes) ? msg.subnetRoutes : [],
   });
+}
+
+function sameList(a, b) {
+  const x = Array.isArray(a) ? a : [];
+  const y = Array.isArray(b) ? b : [];
+  if (x.length !== y.length) return false;
+  for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
+  return true;
 }
 
 // setStatus records a new status and keeps the browser's proxy configuration in
@@ -432,7 +442,8 @@ function setStatus(next) {
       !wasRunning ||
       next.proxyPort !== previous.proxyPort ||
       next.tailnet !== previous.tailnet ||
-      next.exitNode !== previous.exitNode
+      next.exitNode !== previous.exitNode ||
+      !sameList(next.subnetRoutes, previous.subnetRoutes)
     ) {
       applyProxy();
     }

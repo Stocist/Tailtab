@@ -14,6 +14,7 @@ import (
 	"tailscale.com/tailcfg"
 	"tailscale.com/tsconst"
 	"tailscale.com/types/key"
+	"tailscale.com/types/views"
 )
 
 // newTestNode returns a node with the login call stubbed, so the login path can
@@ -648,5 +649,41 @@ func TestPeersComeFromTheStatus(t *testing.T) {
 	}
 	if !slices.Equal(st.Peers, want) {
 		t.Fatalf("peers = %+v, want %+v", st.Peers, want)
+	}
+}
+
+func TestSubnetRoutesComeFromPrimaryRoutes(t *testing.T) {
+	mk := func(cidrs ...string) *views.Slice[netip.Prefix] {
+		var ps []netip.Prefix
+		for _, c := range cidrs {
+			ps = append(ps, netip.MustParsePrefix(c))
+		}
+		v := views.SliceOf(ps)
+		return &v
+	}
+	st := &Status{}
+	s := &ipnstate.Status{Peer: map[key.NodePublic]*ipnstate.PeerStatus{
+		key.NewNode().Public(): {HostName: "router", PrimaryRoutes: mk("192.168.1.0/24", "10.0.0.0/8")},
+		key.NewNode().Public(): {HostName: "exit", PrimaryRoutes: mk("0.0.0.0/0", "::/0")},
+		key.NewNode().Public(): {HostName: "dup", PrimaryRoutes: mk("192.168.1.7/24", "fd00:1:2::/64", "100.64.0.0/10")},
+		key.NewNode().Public(): {HostName: "plain"},
+	}}
+	applySubnetRoutes(st, s)
+	want := []string{"10.0.0.0/8", "192.168.1.0/24", "fd00:1:2::/64"}
+	if !slices.Equal(st.SubnetRoutes, want) {
+		t.Fatalf("routes = %v, want %v (default routes, tailnet ranges and duplicates dropped, masked and sorted)", st.SubnetRoutes, want)
+	}
+}
+
+func TestLoginRestoresRouteAcceptance(t *testing.T) {
+	n, _, _ := newTestNode(t)
+	n.hostname = "mac-tailtab-edge"
+	var got *ipn.MaskedPrefs
+	n.editPrefs = func(_ context.Context, mp *ipn.MaskedPrefs) (*ipn.Prefs, error) { got = mp; return &mp.Prefs, nil }
+	if err := n.requestLogin(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || !got.RouteAllSet || !got.Prefs.RouteAll {
+		t.Fatalf("RouteAll not restored with the other prefs: %+v", got)
 	}
 }

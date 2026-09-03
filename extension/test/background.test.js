@@ -683,7 +683,7 @@ test("rules.js matches the shared host table", () => {
   }
   const wrong = [];
   for (const c of table.cases) {
-    const got = rules.tailtabIsTailnetHost(c.host, c.suffix);
+    const got = rules.tailtabIsTailnetHost(c.host, c.suffix, c.routes || []);
     if (got !== c.proxy) {
       wrong.push(JSON.stringify(c.host) + " with suffix " + JSON.stringify(c.suffix) +
         ": rules.js says " + got + ", the table says " + c.proxy + " (" + c.why + ")");
@@ -1082,7 +1082,7 @@ test("rules.js matches the shared exit-mode table", () => {
   }
   const wrong = [];
   for (const c of table.cases) {
-    const got = rules.tailtabExitModeProxies(c.host);
+    const got = rules.tailtabExitModeProxies(c.host, c.routes || []);
     if (got !== c.proxy) {
       wrong.push(JSON.stringify(c.host) + ": rules.js says " + got + ", the table says " + c.proxy + " (" + c.why + ")");
     }
@@ -1511,6 +1511,64 @@ test("the toolbar icon follows the routing state", async () => {
   env.disconnect();
   await flush();
   eq(env.log.icons.length, before, "an unchanged state does not set the icon again");
+});
+
+// Subnet routes: an address behind a subnet router is a tailnet destination,
+// in the split tunnel and in exit mode alike, and the PAC carries the list.
+test("routed subnets are proxied, in both modes, and the PAC knows them", () => {
+  const rules = require(path.join(SRC, "rules.js"));
+  const routes = ["192.168.1.0/24", "fd00:1:2::/64"];
+  eq(rules.tailtabInRoutes("192.168.1.77", routes), true, "v4 inside");
+  eq(rules.tailtabInRoutes("192.168.2.77", routes), false, "v4 outside");
+  eq(rules.tailtabInRoutes("fd00:1:2:0:aa::1", routes), true, "v6 inside");
+  eq(rules.tailtabInRoutes("fd00:1:3::1", routes), false, "v6 outside");
+  eq(rules.tailtabInRoutes("192.168.1.77", ["0.0.0.0/0"]), true, "a /0 matches everything");
+  eq(rules.tailtabInRoutes("192.168.1.77", ["192.168.1.0/33", "junk", "192.168.1/24", "300.1.1.1/8"]), false, "malformed routes are ignored");
+  const pac = rules.tailtabBuildPac(64378, "tail4d5e6f.ts.net", false, routes);
+  const find = vm.runInNewContext(pac + "\nFindProxyForURL", {});
+  eq(find("http://192.168.1.10/", "192.168.1.10"), "PROXY 127.0.0.1:64378", "routed address via the PAC");
+  eq(find("http://192.168.2.10/", "192.168.2.10"), "DIRECT", "unrouted private address via the PAC");
+  eq(find("http://[fd00:1:2::5]/", "fd00:1:2::5"), "PROXY 127.0.0.1:64378", "routed IPv6 via the PAC");
+  if (!/^[\x00-\x7f]*$/.test(pac)) throw new Error("the PAC is not ASCII");
+  const exit = vm.runInNewContext(rules.tailtabBuildPac(64378, "", true, routes) + "\nFindProxyForURL", {});
+  eq(exit("http://192.168.1.10/", "192.168.1.10"), "PROXY 127.0.0.1:64378", "routed LAN still via the tailnet in exit mode");
+  eq(exit("http://192.168.2.10/", "192.168.2.10"), "DIRECT", "unrouted LAN stays local in exit mode");
+  // A junk route in the status never reaches the script.
+  const dirty = rules.tailtabBuildPac(64378, "", false, ["192.168.1.0/24", "evil\"); alert(1); //"]);
+  if (dirty.indexOf("alert") !== -1) throw new Error("an unvalidated route reached the PAC");
+});
+
+test("a change in subnet routes rewrites the PAC", async () => {
+  const env = makeEnv();
+  await flush();
+  env.status(RUNNING);
+  await flush();
+  const before = env.log.set.length;
+  env.status(Object.assign({}, RUNNING, { subnetRoutes: ["192.168.1.0/24"] }));
+  await flush();
+  eq(env.log.set.length, before + 1, "the PAC was reinstalled");
+  if (env.log.lastPac.indexOf("192.168.1.0/24") === -1) throw new Error("the new PAC does not carry the route");
+  env.status(Object.assign({}, RUNNING, { subnetRoutes: ["192.168.1.0/24"] }));
+  await flush();
+  eq(env.log.set.length, before + 1, "the same routes again do not rewrite it");
+});
+
+test("Firefox proxies a routed subnet address", async () => {
+  const env = makeFirefoxEnv();
+  await flush();
+  env.status(Object.assign({}, RUNNING, { proxyToken: "tok", subnetRoutes: ["10.42.0.0/16"] }));
+  await flush();
+  eq(env.resolve("http://10.42.7.1:8080/").type, "socks", "routed address");
+  eq(env.resolve("http://10.43.0.1/").type, "direct", "unrouted address");
+});
+
+test("the popup lists subnet routes when there are any", () => {
+  const ui = openPopupUI();
+  ui.push({ connected: true, status: { state: "Running", tailnet: "t.ts.net", proxyPort: 1, warnings: [], accounts: [], subnetRoutes: ["192.168.1.0/24", "10.0.0.0/8"] } });
+  eq(ui.els.routesrow.hidden, false, "row shown");
+  eq(ui.els.routes.textContent, "192.168.1.0/24, 10.0.0.0/8", "routes listed");
+  ui.push({ connected: true, status: { state: "Running", tailnet: "t.ts.net", proxyPort: 1, warnings: [], accounts: [], subnetRoutes: [] } });
+  eq(ui.els.routesrow.hidden, true, "row hidden without routes");
 });
 (async () => {
   let failed = 0;

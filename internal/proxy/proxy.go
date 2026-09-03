@@ -22,6 +22,7 @@ import (
 	"net/http/httputil"
 	"net/netip"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -109,7 +110,7 @@ func isPrivate(addr netip.Addr) bool {
 //
 // extension/rules.js has the same rule for the browser side, and both flip on
 // the same status field, or one side sends traffic the other refuses (G14).
-func allowExitHost(host string) error {
+func allowExitHost(host string, routes []netip.Prefix) error {
 	h := strings.ToLower(strings.TrimSuffix(host, "."))
 	h = strings.TrimSuffix(strings.TrimPrefix(h, "["), "]")
 	if h == "" {
@@ -118,6 +119,11 @@ func allowExitHost(host string) error {
 	if addr, err := netip.ParseAddr(h); err == nil {
 		addr = addr.Unmap()
 		if tailscaleV4.Contains(addr) || tailscaleV6.Contains(addr) {
+			return nil
+		}
+		// A subnet a peer routes is part of the tailnet even in exit mode:
+		// tailscaled itself sends it to the subnet router, not the exit node.
+		if inRoutes(addr, routes) {
 			return nil
 		}
 		if isPrivate(addr) {
@@ -152,7 +158,7 @@ func allowExitHost(host string) error {
 // step automatically: they are held together by testdata/tailnet-hosts.json,
 // a shared table of decisions that both this function and rules.js are tested
 // against, so a change to one without the other fails a test.
-func allowTailnetHost(host, suffix string) error {
+func allowTailnetHost(host, suffix string, routes []netip.Prefix) error {
 	h := strings.ToLower(strings.TrimSuffix(host, "."))
 	h = strings.TrimSuffix(strings.TrimPrefix(h, "["), "]")
 	if h == "" {
@@ -163,7 +169,11 @@ func allowTailnetHost(host, suffix string) error {
 		if tailscaleV4.Contains(addr) || tailscaleV6.Contains(addr) {
 			return nil
 		}
-		return fmt.Errorf("%w: %s is outside %s and %s", ErrNotTailnet, h, tailscaleV4, tailscaleV6)
+		// An address inside a subnet a peer routes for the tailnet.
+		if inRoutes(addr, routes) {
+			return nil
+		}
+		return fmt.Errorf("%w: %s is outside %s, %s and the tailnet's subnet routes", ErrNotTailnet, h, tailscaleV4, tailscaleV6)
 	}
 	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
 		return fmt.Errorf("%w: %s is loopback", ErrNotTailnet, h)
@@ -188,6 +198,16 @@ func allowTailnetHost(host, suffix string) error {
 		return fmt.Errorf("%w: %s is a numeric address", ErrNotTailnet, h)
 	}
 	return nil
+}
+
+// inRoutes reports whether addr falls inside any of the routed subnets.
+func inRoutes(addr netip.Addr, routes []netip.Prefix) bool {
+	for _, r := range routes {
+		if r.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 // numericHost matches the decimal and hexadecimal forms of a bare IPv4 address.
@@ -290,6 +310,30 @@ type Server struct {
 	// tailnet rule in place, so a public destination is refused instead of
 	// being dialled straight out of this machine (G15).
 	exitActive bool
+	// routes is every subnet a peer routes for the tailnet, pushed in from
+	// the status stream like the suffix. Addresses inside them are tailnet
+	// destinations in both modes.
+	routes []netip.Prefix
+}
+
+// SetSubnetRoutes replaces the routed subnets the guard allows.
+func (s *Server) SetSubnetRoutes(routes []netip.Prefix) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.routes = slices.Clone(routes)
+}
+
+// SubnetRoutes returns the routes last pushed in.
+func (s *Server) SubnetRoutes() []netip.Prefix {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.routes)
 }
 
 // SetExitActive tells the proxy whether an exit node is currently carrying this
@@ -316,10 +360,11 @@ func (s *Server) ExitActive() bool {
 
 // allow applies whichever destination rule is in force.
 func (s *Server) allow(host string) error {
+	routes := s.SubnetRoutes()
 	if s.ExitActive() {
-		return allowExitHost(host)
+		return allowExitHost(host, routes)
 	}
-	return allowTailnetHost(host, s.MagicDNSSuffix())
+	return allowTailnetHost(host, s.MagicDNSSuffix(), routes)
 }
 
 // SetMagicDNSSuffix tells the proxy the node's own MagicDNS suffix, so a

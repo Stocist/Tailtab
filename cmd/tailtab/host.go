@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/netip"
 	"os"
 	"sync"
 
@@ -63,7 +64,21 @@ func (b *nodeBackend) statusChanged(st node.Status) {
 	// so a public destination is refused rather than dialled straight out of
 	// the Mac while the browser believes it is behind the exit node (G15).
 	p.SetExitActive(st.ExitNodeActive)
+	p.SetSubnetRoutes(parseRoutes(st.SubnetRoutes))
 	b.h.pushStatus()
+}
+
+// parseRoutes turns the status's CIDR strings back into prefixes for the guard,
+// dropping anything that does not parse: the guard must never widen on a
+// malformed string.
+func parseRoutes(cidrs []string) []netip.Prefix {
+	out := make([]netip.Prefix, 0, len(cidrs))
+	for _, c := range cidrs {
+		if p, err := netip.ParsePrefix(c); err == nil {
+			out = append(out, p.Masked())
+		}
+	}
+	return out
 }
 
 func (b *nodeBackend) Status() *nm.Event {
@@ -93,6 +108,7 @@ func (b *nodeBackend) Status() *nm.Event {
 	for _, p := range st.Peers {
 		ev.Peers = append(ev.Peers, nm.Peer{Name: p.Name, DNSName: p.DNSName, IP: p.IP, Online: p.Online, OS: p.OS})
 	}
+	ev.SubnetRoutes = st.SubnetRoutes
 	return ev
 }
 

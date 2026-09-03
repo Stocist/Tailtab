@@ -26,6 +26,8 @@ One source tree serves both browsers; `scripts/build.sh` copies it into `extensi
 - **Chromium (Edge)** gets a PAC script through `chrome.proxy.settings`. The PAC says `PROXY 127.0.0.1:<port>` for tailnet destinations and `DIRECT` for everything else. Chromium cannot authenticate SOCKS5, so the proxy is reached over HTTP and the 407 challenge is answered from `webRequest.onAuthRequired`.
 - **Firefox (Zen)** decides per request in `proxy.onRequest`, returning a SOCKS5 proxy with `proxyDNS: true` and the credential inline, or `direct`.
 
+**Subnet routes.** The node accepts routes advertised by peers (`RouteAll`), and the status event carries every approved primary route as a CIDR. Both rules treat an address inside one as a tailnet destination: in the split tunnel it is proxied instead of going direct, and in exit mode it keeps going through the tailnet rather than being refused as private address space, which is what `tailscaled` does too. The PAC embeds the list, Firefox reads it per request, and the host's guard applies the same test before dialling. Routes match addresses only; a LAN name such as `nas.lan` reaches the tailnet only if the tailnet's DNS resolves it, which the browser cannot know in advance.
+
 `extension/rules.js` is the single source of the routing rules; the PAC is generated from it. The host has the same rules in Go, and `testdata/tailnet-hosts.json` and `testdata/exit-mode-hosts.json` are tables of decisions both implementations are tested against, so they cannot drift apart unnoticed.
 
 ## Restarts and workers

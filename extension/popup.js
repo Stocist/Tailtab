@@ -434,6 +434,10 @@ function render(msg) {
     setText("tailnet", st.tailnet || "unknown");
     setText("hostname", st.hostname || "unknown");
     setText("selfip", st.selfIP || "unknown");
+    const routes = Array.isArray(st.subnetRoutes) ? st.subnetRoutes : [];
+    el("routesrow").hidden = routes.length === 0;
+    setText("routes", routes.join(", "));
+    el("routes").title = routes.join("\n");
   }
   setText("port", st.proxyPort ? "local proxy 127.0.0.1:" + st.proxyPort : "");
 

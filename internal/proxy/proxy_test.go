@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -215,6 +216,22 @@ type hostCase struct {
 	Suffix string `json:"suffix"`
 	Proxy  bool   `json:"proxy"`
 	Why    string `json:"why"`
+	// Routes is the subnet routes the node knows at the time, as CIDRs.
+	Routes []string `json:"routes"`
+}
+
+// prefixes parses a table row's routes the way the host does before they
+// reach the guard (parseRoutes in cmd/tailtab): a malformed one is dropped, so
+// the table can say that a bad route widens nothing.
+func prefixes(t *testing.T, cidrs []string) []netip.Prefix {
+	t.Helper()
+	var out []netip.Prefix
+	for _, c := range cidrs {
+		if p, err := netip.ParsePrefix(c); err == nil {
+			out = append(out, p.Masked())
+		}
+	}
+	return out
 }
 
 func loadHostCases(t *testing.T) []hostCase {
@@ -240,7 +257,7 @@ func loadHostCases(t *testing.T) []hostCase {
 // a host the extension proxies but the guard refuses is a 403 the user sees.
 func TestAllowTailnetHost(t *testing.T) {
 	for _, c := range loadHostCases(t) {
-		err := allowTailnetHost(c.Host, c.Suffix)
+		err := allowTailnetHost(c.Host, c.Suffix, prefixes(t, c.Routes))
 		if c.Proxy && err != nil {
 			t.Errorf("allowTailnetHost(%q, %q) = %v, want nil (%s)", c.Host, c.Suffix, err, c.Why)
 		}
@@ -791,10 +808,10 @@ func TestARefusedSuffixLeavesTheRuleAlone(t *testing.T) {
 	if got := p.MagicDNSSuffix(); got != "" {
 		t.Errorf("MagicDNSSuffix() = %q after a refused suffix, want empty", got)
 	}
-	if err := allowTailnetHost("github.com", p.MagicDNSSuffix()); err == nil {
+	if err := allowTailnetHost("github.com", p.MagicDNSSuffix(), nil); err == nil {
 		t.Error("github.com is allowed after a suffix of com")
 	}
-	if err := allowTailnetHost("wiki.tail4d5e6f.ts.net", p.MagicDNSSuffix()); err != nil {
+	if err := allowTailnetHost("wiki.tail4d5e6f.ts.net", p.MagicDNSSuffix(), nil); err != nil {
 		t.Errorf("a .ts.net name is refused after a bad suffix: %v", err)
 	}
 
@@ -934,7 +951,7 @@ func loadExitCases(t *testing.T) []hostCase {
 // LAN rather than the user's.
 func TestAllowExitHost(t *testing.T) {
 	for _, c := range loadExitCases(t) {
-		err := allowExitHost(c.Host)
+		err := allowExitHost(c.Host, prefixes(t, c.Routes))
 		if c.Proxy && err != nil {
 			t.Errorf("allowExitHost(%q) = %v, want nil (%s)", c.Host, err, c.Why)
 		}
@@ -952,15 +969,15 @@ func TestAllowExitHost(t *testing.T) {
 // wider for public destinations and no wider for anything local.
 func TestTheTwoModesDifferOnlyWhereIntended(t *testing.T) {
 	for _, c := range loadExitCases(t) {
-		exitErr := allowExitHost(c.Host)
-		tailnetErr := allowTailnetHost(c.Host, "")
+		exitErr := allowExitHost(c.Host, prefixes(t, c.Routes))
+		tailnetErr := allowTailnetHost(c.Host, "", prefixes(t, c.Routes))
 		if tailnetErr == nil && exitErr != nil {
 			t.Errorf("%q is allowed in the tailnet rule but refused in exit mode (%s)", c.Host, c.Why)
 		}
 	}
 	// And nothing private becomes reachable by turning exit mode on.
 	for _, h := range []string{"127.0.0.1", "10.0.0.5", "192.168.1.1", "169.254.1.1", "fe80::1", "fd00::1", "localhost"} {
-		if err := allowExitHost(h); err == nil {
+		if err := allowExitHost(h, nil); err == nil {
 			t.Errorf("allowExitHost(%q) = nil; exit mode must not reach a LAN", h)
 		}
 	}

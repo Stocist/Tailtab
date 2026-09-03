@@ -18,9 +18,9 @@ curl -x http://127.0.0.1:<port> -U tailtab:<token> http://server/    # proxied
 
 ## The destination guard
 
-The listener only dials what the tailnet can serve: single-label MagicDNS names, `*.ts.net`, this node's own MagicDNS suffix (validated as a real multi-label DNS name and matched only on a label boundary), and addresses in `100.64.0.0/10` or `fd7a:115c:a1e0::/48`. Everything else is refused with `403` (HTTP) or a SOCKS failure reply.
+The listener only dials what the tailnet can serve: single-label MagicDNS names, `*.ts.net`, this node's own MagicDNS suffix (validated as a real multi-label DNS name and matched only on a label boundary), addresses in `100.64.0.0/10` or `fd7a:115c:a1e0::/48`, and addresses inside a subnet a peer routes for the tailnet (the approved primary routes reported by the node; a malformed route is dropped, never widened). Everything else is refused with `403` (HTTP) or a SOCKS failure reply.
 
-While an exit node is selected *and online*, the guard flips to allow any public destination and refuse loopback, link-local and private address space, which would otherwise be dialled on the exit node's own network. Selected but offline keeps the tailnet-only guard, so traffic is blocked rather than sent out of the machine directly while the browser believes it is behind the exit node.
+While an exit node is selected *and online*, the guard flips to allow any public destination and refuse loopback, link-local and private address space, which would otherwise be dialled on the exit node's own network. Routed subnets stay allowed in exit mode: they belong to the tailnet, not to the exit node's LAN. Selected but offline keeps the tailnet-only guard, so traffic is blocked rather than sent out of the machine directly while the browser believes it is behind the exit node.
 
 ## Extension permissions
 

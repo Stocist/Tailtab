@@ -7,6 +7,94 @@
 // ordinary browsing working when the native host dies (the failure mode of
 // ts-browser-ext issue #18).
 
+// tailtabInRoutes reports whether h, an IP address literal already lower-cased
+// and unbracketed, falls inside any of routes, an array of CIDR strings such as
+// "192.168.1.0/24" or "fd00:1:2::/64". Subnet routes are what peers advertise
+// and the admin console approves; an address inside one reaches the tailnet
+// through that peer, so it is a tailnet destination in both modes.
+//
+// Self-contained and pure ASCII, like the two rules that call it: its source is
+// embedded in the PAC script. A malformed route is ignored, never widened.
+function tailtabInRoutes(h, routes) {
+  if (!routes || !routes.length) return false;
+  var v4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  function ipv4(m) {
+    var n = 0;
+    for (var i = 1; i <= 4; i++) {
+      var o = parseInt(m[i], 10);
+      if (o > 255) return -1;
+      n = n * 256 + o;
+    }
+    return n;
+  }
+  function ipv6(str) {
+    // Returns eight 16-bit numbers, or null.
+    if (str.indexOf(".") !== -1) return null; // mixed notation is not used here
+    var halves = str.split("::");
+    if (halves.length > 2) return null;
+    var head = halves[0] ? halves[0].split(":") : [];
+    var tail = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+    if (halves.length === 1 && head.length !== 8) return null;
+    if (halves.length === 2 && head.length + tail.length > 7) return null;
+    var out = [];
+    var groups = head.concat([]);
+    var fill = halves.length === 2 ? 8 - head.length - tail.length : 0;
+    for (var f = 0; f < fill; f++) groups.push("0");
+    groups = groups.concat(tail);
+    for (var g = 0; g < groups.length; g++) {
+      if (!/^[0-9a-f]{1,4}$/.test(groups[g])) return null;
+      out.push(parseInt(groups[g], 16));
+    }
+    return out.length === 8 ? out : null;
+  }
+  if (v4) {
+    var ip = ipv4(v4);
+    if (ip < 0) return false;
+    for (var i = 0; i < routes.length; i++) {
+      var r = String(routes[i]).split("/");
+      if (r.length !== 2) continue;
+      var rm = r[0].match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+      var bits = parseInt(r[1], 10);
+      if (!rm || !(bits >= 0 && bits <= 32) || String(bits) !== r[1]) continue;
+      var net = ipv4(rm);
+      if (net < 0) continue;
+      if (bits === 0) return true;
+      // Compare the top "bits" bits. Division keeps this in plain arithmetic:
+      // JavaScript's bitwise operators are 32-bit signed and a /0 route would
+      // shift by 32, which is a no-op.
+      var scale = Math.pow(2, 32 - bits);
+      if (Math.floor(ip / scale) === Math.floor(net / scale)) return true;
+    }
+    return false;
+  }
+  if (h.indexOf(":") !== -1) {
+    var a6 = ipv6(h);
+    if (!a6) return false;
+    for (var j = 0; j < routes.length; j++) {
+      var r6 = String(routes[j]).toLowerCase().split("/");
+      if (r6.length !== 2) continue;
+      var bits6 = parseInt(r6[1], 10);
+      if (!(bits6 >= 0 && bits6 <= 128) || String(bits6) !== r6[1]) continue;
+      var n6 = ipv6(r6[0]);
+      if (!n6) continue;
+      var ok = true;
+      for (var k = 0; k < 8 && ok; k++) {
+        var take = bits6 - 16 * k;
+        if (take <= 0) break;
+        if (take >= 16) {
+          ok = a6[k] === n6[k];
+        } else {
+          var sc = Math.pow(2, 16 - take);
+          ok = Math.floor(a6[k] / sc) === Math.floor(n6[k] / sc);
+        }
+      }
+      if (ok) return true;
+    }
+    return false;
+  }
+  return false;
+}
+
 // tailtabIsTailnetHost reports whether host belongs to the tailnet.
 //
 // It must stay self-contained: its source is stringified into a PAC script,
@@ -16,7 +104,7 @@
 // when the tailnet uses a custom domain. The host's guard (internal/proxy,
 // allowTailnetHost) must agree with this function on every name: the two are
 // held together by testdata/tailnet-hosts.json, which both are tested against.
-function tailtabIsTailnetHost(host, tailnetDomain) {
+function tailtabIsTailnetHost(host, tailnetDomain, routes) {
   if (!host) return false;
   var h = String(host).toLowerCase();
   if (h.charAt(h.length - 1) === ".") h = h.slice(0, -1);
@@ -38,12 +126,15 @@ function tailtabIsTailnetHost(host, tailnetDomain) {
   if (v4) {
     var a = parseInt(v4[1], 10);
     var b = parseInt(v4[2], 10);
-    return a === 100 && b >= 64 && b <= 127;
+    if (a === 100 && b >= 64 && b <= 127) return true;
+    // An address inside a subnet a peer routes for the tailnet.
+    return tailtabInRoutes(h, routes);
   }
 
-  // Tailscale's ULA range, fd7a:115c:a1e0::/48.
+  // Tailscale's ULA range, fd7a:115c:a1e0::/48, or a routed IPv6 subnet.
   if (h.indexOf(":") !== -1) {
-    return h.indexOf("fd7a:115c:a1e0") === 0;
+    if (h.indexOf("fd7a:115c:a1e0") === 0) return true;
+    return tailtabInRoutes(h, routes);
   }
 
   // A bare number is never a MagicDNS name: it is an obfuscated form of an
@@ -91,7 +182,7 @@ function tailtabIsTailnetHost(host, tailnetDomain) {
 //
 // Like tailtabIsTailnetHost, this must stay self-contained and pure ASCII: its
 // source is stringified into a PAC script.
-function tailtabExitModeProxies(host) {
+function tailtabExitModeProxies(host, routes) {
   if (!host) return false;
   var h = String(host).toLowerCase();
   if (h.charAt(h.length - 1) === ".") h = h.slice(0, -1);
@@ -109,6 +200,9 @@ function tailtabExitModeProxies(host) {
     var a = parseInt(v4[1], 10);
     var b = parseInt(v4[2], 10);
     if (a === 100 && b >= 64 && b <= 127) return true; // the tailnet itself
+    // A routed subnet is still the tailnet's in exit mode: tailscaled sends it
+    // to the subnet router, not the exit node.
+    if (tailtabInRoutes(h, routes)) return true;
     if (a === 0 || a === 10 || a === 127) return false; // this host, private, loopback
     if (a === 172 && b >= 16 && b <= 31) return false; // 172.16/12
     if (a === 192 && b === 168) return false; // 192.168/16
@@ -119,6 +213,7 @@ function tailtabExitModeProxies(host) {
 
   if (h.indexOf(":") !== -1) {
     if (h.indexOf("fd7a:115c:a1e0") === 0) return true; // the tailnet's ULA
+    if (tailtabInRoutes(h, routes)) return true; // a routed IPv6 subnet
     if (h === "::1" || h === "::") return false;
     // fe80::/10 is fe80 through febf; fc00::/7 is every fc and fd; ff00::/8 is
     // multicast.
@@ -150,26 +245,40 @@ function tailtabExitModeProxies(host) {
 //
 // There is deliberately no "; DIRECT" fallback: a tailnet request that cannot
 // authenticate must fail, not quietly go out over the public internet.
-function tailtabBuildPac(port, tailnetDomain, exitMode) {
+function tailtabBuildPac(port, tailnetDomain, exitMode, routes) {
   var target = JSON.stringify("PROXY 127.0.0.1:" + port);
+  // Only well-formed CIDR strings reach the script; anything else is dropped
+  // here as well as ignored inside the rule.
+  var clean = [];
+  var list = Array.isArray(routes) ? routes : [];
+  for (var i = 0; i < list.length; i++) {
+    if (/^[0-9a-fA-F:.]+\/\d{1,3}$/.test(String(list[i]))) clean.push(String(list[i]).toLowerCase());
+  }
+  var routesJSON = JSON.stringify(clean);
   var pac;
   if (exitMode) {
     // An exit node is selected, so everything that is not local goes through
     // it. The browser and the host switch on the same status field, or one
     // sends traffic the other refuses.
     pac =
+      tailtabInRoutes.toString() +
+      "\n" +
       tailtabExitModeProxies.toString() +
-      "\nfunction FindProxyForURL(url, host) {\n" +
-      "  return tailtabExitModeProxies(host) ? " +
+      "\nvar TAILTAB_ROUTES = " + routesJSON + ";\n" +
+      "function FindProxyForURL(url, host) {\n" +
+      "  return tailtabExitModeProxies(host, TAILTAB_ROUTES) ? " +
       target +
       " : \"DIRECT\";\n}\n";
   } else {
     pac =
+      tailtabInRoutes.toString() +
+      "\n" +
       tailtabIsTailnetHost.toString() +
-      "\nfunction FindProxyForURL(url, host) {\n" +
+      "\nvar TAILTAB_ROUTES = " + routesJSON + ";\n" +
+      "function FindProxyForURL(url, host) {\n" +
       "  return tailtabIsTailnetHost(host, " +
       JSON.stringify(tailnetDomain || "") +
-      ") ? " +
+      ", TAILTAB_ROUTES) ? " +
       target +
       " : \"DIRECT\";\n}\n";
   }
@@ -193,6 +302,7 @@ function tailtabBuildPac(port, tailnetDomain, exitMode) {
 // Export for the popup and for tests; the background scripts use the globals.
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
+    tailtabInRoutes: tailtabInRoutes,
     tailtabIsTailnetHost: tailtabIsTailnetHost,
     tailtabExitModeProxies: tailtabExitModeProxies,
     tailtabBuildPac: tailtabBuildPac,

@@ -21,3 +21,7 @@
 
 # Working notes live outside the repo (../tailtab-private-notes); never commit them.
 /coordination/
+
+# Local agent config (Claude Code, OpenCode). Skills reference the private notes and real tailnet names.
+/.claude/
+/.opencode/
