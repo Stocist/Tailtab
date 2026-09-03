@@ -177,9 +177,12 @@ type Node struct {
 	controlURL string
 	// notes are warnings of tailtab's own (as opposed to Tailscale's health
 	// warnables), appended to Status.Warnings.
-	notes   []string
-	started bool
-	st      Status
+	notes []string
+	// exitRestored records which accounts have had their remembered exit
+	// node put back this process, so it happens once per account per start.
+	exitRestored map[string]bool
+	started      bool
+	st           Status
 }
 
 // New returns a Node that calls onChange whenever its status changes.
@@ -193,10 +196,24 @@ func New(onChange func(Status)) *Node {
 // Files tailtab keeps in the node's state directory, beside tsnet's.
 const (
 	controlURLFile = "control-url"
-	exitNodeFile   = "exit-node"
+	exitNodeFile   = "exit-node" // + "." + account ID
 )
 
+func exitNodeFileFor(account string) string { return exitNodeFile + "." + account }
+
+func activeAccountID(accounts []Account) string {
+	for _, a := range accounts {
+		if a.Active {
+			return a.ID
+		}
+	}
+	return ""
+}
+
 func readStateFile(dir, name string) string {
+	if dir == "" {
+		return ""
+	}
 	b, err := os.ReadFile(filepath.Join(dir, name))
 	if err != nil {
 		return ""
@@ -205,6 +222,9 @@ func readStateFile(dir, name string) string {
 }
 
 func writeStateFile(dir, name, value string) error {
+	if dir == "" {
+		return nil
+	}
 	p := filepath.Join(dir, name)
 	if value == "" {
 		err := os.Remove(p)
@@ -216,25 +236,57 @@ func writeStateFile(dir, name, value string) error {
 	return os.WriteFile(p, []byte(value+"\n"), 0o600)
 }
 
+// defaultPin is what the pin file holds for Tailscale's own server, so that a
+// profile is pinned from its very first start whether or not a setting was
+// given. Without an explicit pin a profile that joined Tailscale could be
+// repointed by a setting made later.
+const defaultPin = "default"
+
+// hasAccounts reports whether tsnet's state in dir holds any login profile.
+// It looks for the profile manager's key in tailscaled.state, which is a JSON
+// object; before any login the key is absent.
+func hasAccounts(dir string) bool {
+	b, err := os.ReadFile(filepath.Join(dir, "tailscaled.state"))
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(b), `"_profiles"`)
+}
+
 // pinControlURL decides which coordination server this profile uses. The
-// first start with a setting pins it; later starts use the pin regardless of
-// the setting, so an account can never be repointed. It returns the effective
-// URL and a note for the popup when the setting and the pin disagree.
+// first start pins it, to the setting if there is one and to Tailscale's
+// otherwise; later starts use the pin regardless of the setting, so an account
+// can never be repointed. The one exception is a profile that has never
+// logged in: it may still change its mind. It returns the effective URL ("" for
+// Tailscale's) and a note for the popup when the setting and the pin disagree.
 func pinControlURL(dir, setting string) (effective, note string, err error) {
 	pinned := readStateFile(dir, controlURLFile)
-	switch {
-	case pinned != "":
-		if setting != "" && setting != pinned {
-			note = "This profile's accounts use " + pinned + "; the coordination server in Settings applies only to a browser profile that has not logged in yet."
+	want := setting
+	if want == "" {
+		want = defaultPin
+	}
+	if pinned != "" && pinned != want && hasAccounts(dir) {
+		shown := pinned
+		if shown == defaultPin {
+			shown = "Tailscale's coordination server"
+		}
+		if setting != "" {
+			note = "This profile's accounts use " + shown + "; the coordination server in Settings applies only to a browser profile that has not logged in yet."
+		}
+		if pinned == defaultPin {
+			return "", note, nil
 		}
 		return pinned, note, nil
-	case setting != "":
-		if err := writeStateFile(dir, controlURLFile, setting); err != nil {
+	}
+	if pinned != want {
+		if err := writeStateFile(dir, controlURLFile, want); err != nil {
 			return "", "", fmt.Errorf("remembering the coordination server: %w", err)
 		}
-		return setting, "", nil
 	}
-	return "", "", nil
+	if want == defaultPin {
+		return "", "", nil
+	}
+	return want, "", nil
 }
 
 // StateDir returns the tsnet state directory for a profile. Each profile gets
@@ -256,8 +308,17 @@ func HostnameFor(browser string) string {
 	if err != nil || h == "" {
 		h = "mac"
 	}
-	h = strings.TrimSuffix(h, ".local")
-	h = strings.TrimSuffix(h, ".lan")
+	return sanitiseHostname(h) + "-tailtab-" + browser
+}
+
+// sanitiseHostname turns a machine name into the DNS-safe label the node is
+// named after.
+func sanitiseHostname(h string) string {
+	// The first label only: a machine on a tailnet reports its MagicDNS name
+	// ("laptop.tail1a2b3c.ts.net") as its hostname, which would put the
+	// tailnet's ID into this node's name on every tailnet it joins, and rename
+	// it depending on whether the system client is up.
+	h, _, _ = strings.Cut(h, ".")
 	var b strings.Builder
 	for _, r := range strings.ToLower(h) {
 		switch {
@@ -271,7 +332,7 @@ func HostnameFor(browser string) string {
 	if name == "" {
 		name = "mac"
 	}
-	return name + "-tailtab-" + browser
+	return name
 }
 
 // Start brings up the node for profileID and begins watching the IPN bus. It
@@ -350,13 +411,6 @@ func (n *Node) Start(profileID, browser, controlURL string) error {
 		n.mu.Lock()
 		n.notes = append(n.notes, "Subnet routes are off: "+err.Error())
 		n.mu.Unlock()
-	}
-	// The exit node the user picked last time. tsnet's Start resets the prefs,
-	// so the selection is tailtab's to remember and put back.
-	if id := readStateFile(dir, exitNodeFile); id != "" {
-		if err := n.setExitNodePref(context.Background(), id); err != nil {
-			log.Printf("restoring the exit node %q: %v", id, err)
-		}
 	}
 
 	// NotifyInitialStatus is what carries the tailnet name and self IP:
@@ -516,12 +570,34 @@ func (n *Node) refresh(ctx context.Context) {
 			haveAccounts = true
 		}
 	}
+	var restore string
 	n.update(func(st *Status) {
 		applyIPNStatus(st, s)
 		if haveAccounts {
 			st.Accounts = accounts
 		}
+		// The exit node remembered for this account, once: only if nothing is
+		// selected now and the tailnet still offers it, so a node from another
+		// account's tailnet can never be pushed into these prefs.
+		if st.ExitNode == "" && st.State == ipn.Running.String() {
+			if account := activeAccountID(st.Accounts); account != "" && !n.exitRestored[account] {
+				if id := readStateFile(n.dir, exitNodeFileFor(account)); id != "" {
+					if slices.ContainsFunc(st.ExitNodes, func(e ExitNode) bool { return e.ID == id }) {
+						restore = id
+					}
+					if n.exitRestored == nil {
+						n.exitRestored = map[string]bool{}
+					}
+					n.exitRestored[account] = true
+				}
+			}
+		}
 	})
+	if restore != "" {
+		if err := n.setExitNodePref(ctx, restore); err != nil {
+			log.Printf("restoring the exit node %q: %v", restore, err)
+		}
+	}
 }
 
 // accountsFrom shapes the login profiles for the popup. A profile only exists
@@ -814,13 +890,16 @@ func (n *Node) SetExitNode(id string) error {
 	if err := n.setExitNodePref(ctx, id); err != nil {
 		return err
 	}
-	// Remembered by tailtab because tsnet's Start resets the prefs; Start
-	// puts it back.
+	// Remembered by tailtab, per account, because tsnet's Start resets the
+	// prefs; the next refresh that finds the node on offer puts it back.
 	n.mu.Lock()
 	dir := n.dir
+	account := activeAccountID(n.st.Accounts)
 	n.mu.Unlock()
-	if err := writeStateFile(dir, exitNodeFile, id); err != nil {
-		log.Printf("remembering the exit node: %v", err)
+	if account != "" {
+		if err := writeStateFile(dir, exitNodeFileFor(account), id); err != nil {
+			log.Printf("remembering the exit node: %v", err)
+		}
 	}
 	// The prefs notification that follows carries the new selection, and the
 	// refresh it triggers says whether the node is actually usable.
@@ -861,7 +940,7 @@ func (n *Node) SwitchAccount(id string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	n.update(func(st *Status) {
-		clearAccountState(st)
+		n.clearAccountState(st)
 		n.loginRequested = false
 	})
 	if err := sw(ctx, ipn.ProfileID(id)); err != nil {
@@ -873,11 +952,13 @@ func (n *Node) SwitchAccount(id string) error {
 // clearAccountState drops everything in a status that belongs to the account
 // being left: its tailnet, its node identity, its peers and exit nodes, its
 // login URL and login error. Whatever the new profile has arrives from the bus.
-func clearAccountState(st *Status) {
+func (n *Node) clearAccountState(st *Status) {
 	st.AuthURL = ""
 	st.Error = ""
 	st.Tailnet = ""
-	st.Hostname = ""
+	// Our own name, not the OS hostname: the tailnet's name for the node
+	// arrives with the new account's status (F6).
+	st.Hostname = n.hostname
 	st.SelfIP = ""
 	st.Peers = nil
 	st.ExitNodes = nil
@@ -924,7 +1005,7 @@ func (n *Node) AddAccount(controlURL string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	n.update(func(st *Status) {
-		clearAccountState(st)
+		n.clearAccountState(st)
 		n.loginRequested = false
 	})
 	if err := add(ctx); err != nil {

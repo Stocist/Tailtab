@@ -45,34 +45,15 @@ function tailtabInRoutes(h, routes) {
     return false;
   }
   function v6Overlaps(n6, bits) {
-    // ::/128, ::1/128, fe80::/10, ff00::/8
-    var zero = true;
-    for (var z = 0; z < 8; z++) if (n6[z] !== 0) { zero = false; break; }
-    if (zero) return true; // a route starting at :: covers ::/128 (and, if narrow enough, ::1)
-    var top = n6[0];
-    if (bits <= 10 ? Math.floor(top / 64) === Math.floor(0xfe80 / 64) || (Math.floor(top / Math.pow(2, 16 - bits)) === Math.floor(0xfe80 / Math.pow(2, 16 - bits))) : Math.floor(top / 64) === Math.floor(0xfe80 / 64)) return true;
-    if (bits <= 8 ? Math.floor(top / Math.pow(2, 16 - bits)) === Math.floor(0xff00 / Math.pow(2, 16 - bits)) : Math.floor(top / 256) === 0xff) return true;
+    // Routes narrower than /16 never get here (see the floor below), so the
+    // top group decides for link-local and multicast; the unspecified and
+    // loopback addresses are the two all-zero-but-last cases.
+    var zeros = true;
+    for (var z = 0; z < 7; z++) if (n6[z] !== 0) { zeros = false; break; }
+    if (zeros && n6[7] <= 1) return true; // ::/128 and ::1/128 (or a route starting there)
+    if (n6[0] >= 0xfe80 && n6[0] <= 0xfebf) return true; // fe80::/10
+    if (Math.floor(n6[0] / 256) === 0xff) return true; // ff00::/8
     return false;
-  }
-  function ipv6(str) {
-    // Returns eight 16-bit numbers, or null.
-    if (str.indexOf(".") !== -1) return null; // mixed notation is not used here
-    var halves = str.split("::");
-    if (halves.length > 2) return null;
-    var head = halves[0] ? halves[0].split(":") : [];
-    var tail = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
-    if (halves.length === 1 && head.length !== 8) return null;
-    if (halves.length === 2 && head.length + tail.length > 7) return null;
-    var out = [];
-    var groups = head.concat([]);
-    var fill = halves.length === 2 ? 8 - head.length - tail.length : 0;
-    for (var f = 0; f < fill; f++) groups.push("0");
-    groups = groups.concat(tail);
-    for (var g = 0; g < groups.length; g++) {
-      if (!/^[0-9a-f]{1,4}$/.test(groups[g])) return null;
-      out.push(parseInt(groups[g], 16));
-    }
-    return out.length === 8 ? out : null;
   }
   if (v4) {
     var ip = ipv4(v4);
@@ -292,8 +273,8 @@ function tailtabExitModeProxies(host, routes) {
 //
 // There is deliberately no "; DIRECT" fallback: a tailnet request that cannot
 // authenticate must fail, not quietly go out over the public internet.
-function tailtabBuildPac(port, tailnetDomain, exitMode, routes) {
-  var target = JSON.stringify("PROXY 127.0.0.1:" + port);
+function tailtabBuildPac(port, tailnetDomain, exitMode, routes, proxyHost) {
+  var target = JSON.stringify("PROXY " + (proxyHost || "127.0.0.1") + ":" + port);
   // Only well-formed CIDR strings reach the script; anything else is dropped
   // here as well as ignored inside the rule.
   var clean = [];

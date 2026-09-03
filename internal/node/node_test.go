@@ -3,6 +3,8 @@ package node
 import (
 	"context"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -631,8 +633,11 @@ func TestAddAccountStartsAFreshProfileAndRestoresPrefs(t *testing.T) {
 		t.Fatalf("call order %q, want %q", got, want)
 	}
 	st := n.Status()
-	if st.AuthURL != "" || st.Tailnet != "" || st.Hostname != "" || len(st.Peers) != 0 {
+	if st.AuthURL != "" || st.Tailnet != "" || len(st.Peers) != 0 || st.ControlURL != "" || len(st.SubnetRoutes) != 0 {
 		t.Fatalf("the old account's state survived into the new profile: %+v", st)
+	}
+	if st.Hostname != "mac-tailtab-edge" {
+		t.Fatalf("hostname = %q; our own name must stay through a switch, never the OS hostname", st.Hostname)
 	}
 }
 
@@ -731,25 +736,73 @@ func TestAddAccountSetsTheControlServerBeforeLogin(t *testing.T) {
 }
 
 func TestPinControlURL(t *testing.T) {
+	loggedIn := func(dir string) {
+		// What tsnet leaves behind once a login has happened.
+		if err := os.WriteFile(filepath.Join(dir, "tailscaled.state"), []byte(`{"_profiles":"e30=","_current-profile":"cA=="}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A profile that starts on Tailscale's server is pinned to it from the
+	// first start, so a setting made after its login cannot repoint it.
 	dir := t.TempDir()
 	eff, note, err := pinControlURL(dir, "")
 	if err != nil || eff != "" || note != "" {
-		t.Fatalf("no setting, no pin: %q %q %v", eff, note, err)
+		t.Fatalf("first start, no setting: %q %q %v", eff, note, err)
+	}
+	if readStateFile(dir, controlURLFile) != defaultPin {
+		t.Fatal("Tailscale's server was not pinned explicitly")
+	}
+	loggedIn(dir)
+	eff, note, err = pinControlURL(dir, "https://hs.example.com")
+	if err != nil || eff != "" || note == "" {
+		t.Fatalf("a setting after login must be reported, not applied: %q %q %v", eff, note, err)
+	}
+
+	// Before any login the profile may still change its mind.
+	dir = t.TempDir()
+	if _, _, err := pinControlURL(dir, ""); err != nil {
+		t.Fatal(err)
 	}
 	eff, note, err = pinControlURL(dir, "https://hs.example.com")
 	if err != nil || eff != "https://hs.example.com" || note != "" {
-		t.Fatalf("first setting pins: %q %q %v", eff, note, err)
+		t.Fatalf("re-pin before login: %q %q %v", eff, note, err)
 	}
-	// A later start with the setting cleared keeps the pin (B1: clearing the
-	// setting must not repoint the account at Tailscale).
+	// After login, a cleared setting keeps the pin (B1) and a different one is
+	// reported.
+	loggedIn(dir)
 	eff, note, err = pinControlURL(dir, "")
 	if err != nil || eff != "https://hs.example.com" || note != "" {
 		t.Fatalf("cleared setting keeps the pin: %q %q %v", eff, note, err)
 	}
-	// A different setting is reported, not applied.
 	eff, note, err = pinControlURL(dir, "https://other.example.com")
 	if err != nil || eff != "https://hs.example.com" || note == "" {
 		t.Fatalf("different setting: %q %q %v", eff, note, err)
+	}
+}
+
+func TestHostnameForUsesTheFirstLabel(t *testing.T) {
+	got := sanitiseHostname("laptop.tail1a2b3c.ts.net") + "-tailtab-edge"
+	if got != "laptop-tailtab-edge" {
+		t.Fatalf("got %q; the tailnet ID leaked into the node name", got)
+	}
+	if sanitiseHostname("My Mac.local") != "my-mac" {
+		t.Fatalf("sanitise: %q", sanitiseHostname("My Mac.local"))
+	}
+}
+
+func TestSwitchKeepsOurHostname(t *testing.T) {
+	n, _, _ := newTestNode(t)
+	n.hostname = "laptop-tailtab-edge"
+	n.st.Hostname = "laptop-tailtab-edge"
+	n.st.Accounts = []Account{{ID: "p1", Active: true}, {ID: "p2"}}
+	n.switchProfile = func(context.Context, ipn.ProfileID) error { return nil }
+	n.editPrefs = func(_ context.Context, mp *ipn.MaskedPrefs) (*ipn.Prefs, error) { return &mp.Prefs, nil }
+	if err := n.SwitchAccount("p2"); err != nil {
+		t.Fatal(err)
+	}
+	if n.Status().Hostname != "laptop-tailtab-edge" {
+		t.Fatalf("hostname after switch = %q", n.Status().Hostname)
 	}
 }
 
@@ -768,10 +821,11 @@ func TestUsableRoute(t *testing.T) {
 	}
 }
 
-func TestExitNodeSelectionIsRemembered(t *testing.T) {
+func TestExitNodeSelectionIsRememberedPerAccount(t *testing.T) {
 	n, _, _ := newTestNode(t)
 	n.dir = t.TempDir()
-	n.st.ExitNodes = []ExitNode{{ID: "n1", Name: "server", Online: true}}
+	n.st.Accounts = []Account{{ID: "pA", Active: true}, {ID: "pB"}}
+	n.st.ExitNodes = []ExitNode{{ID: "nodeA", Name: "server", Online: true}}
 	var set []string
 	n.editPrefs = func(_ context.Context, mp *ipn.MaskedPrefs) (*ipn.Prefs, error) {
 		if mp.ExitNodeIDSet {
@@ -779,20 +833,54 @@ func TestExitNodeSelectionIsRemembered(t *testing.T) {
 		}
 		return &mp.Prefs, nil
 	}
-	if err := n.SetExitNode("n1"); err != nil {
+	if err := n.SetExitNode("nodeA"); err != nil {
 		t.Fatal(err)
 	}
-	if readStateFile(n.dir, exitNodeFile) != "n1" {
-		t.Fatal("the selection was not written down")
+	if readStateFile(n.dir, exitNodeFileFor("pA")) != "nodeA" {
+		t.Fatal("the selection was not written down for account pA")
 	}
+
+	// A restart: nothing selected, account pA active, nodeA on offer -> put back.
+	n.st.ExitNode = ""
+	n.exitRestored = nil
+	n.readStatus = func(context.Context) (*ipnstate.Status, error) {
+		return &ipnstate.Status{BackendState: "Running", Peer: map[key.NodePublic]*ipnstate.PeerStatus{
+			key.NewNode().Public(): {ID: "nodeA", HostName: "server", ExitNodeOption: true, Online: true},
+		}}, nil
+	}
+	n.refresh(context.Background())
+	if strings.Join(set, ",") != "nodeA,nodeA" {
+		t.Fatalf("prefs edits = %v, want the selection restored once", set)
+	}
+	n.refresh(context.Background())
+	if strings.Join(set, ",") != "nodeA,nodeA" {
+		t.Fatalf("prefs edits = %v, restored more than once", set)
+	}
+
+	// Account pB, whose tailnet does not offer nodeA: nothing is pushed even
+	// though a memory says nodeA (the F2 regression).
+	set = nil
+	n.st.ExitNode = ""
+	n.st.Accounts = []Account{{ID: "pA"}, {ID: "pB", Active: true}}
+	n.exitRestored = nil
+	if err := writeStateFile(n.dir, exitNodeFileFor("pB"), "nodeA"); err != nil {
+		t.Fatal(err)
+	}
+	n.readStatus = func(context.Context) (*ipnstate.Status, error) {
+		return &ipnstate.Status{BackendState: "Running", Peer: map[key.NodePublic]*ipnstate.PeerStatus{
+			key.NewNode().Public(): {ID: "nodeB", HostName: "other", ExitNodeOption: true, Online: true},
+		}}, nil
+	}
+	n.refresh(context.Background())
+	if len(set) != 0 {
+		t.Fatalf("a foreign node ID was pushed into the prefs: %v", set)
+	}
+
 	if err := n.SetExitNode(""); err != nil {
 		t.Fatal(err)
 	}
-	if readStateFile(n.dir, exitNodeFile) != "" {
+	if readStateFile(n.dir, exitNodeFileFor("pB")) != "" {
 		t.Fatal("clearing the selection left the file behind")
-	}
-	if strings.Join(set, ",") != "n1," {
-		t.Fatalf("prefs edits = %v", set)
 	}
 }
 

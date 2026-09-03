@@ -315,12 +315,12 @@ test("a host restart on a new port reinstalls the PAC", async () => {
   env.disconnect();
   await flush();
   eq(env.log.clear, [], "the setting is not handed back on a crash");
-  eq(env.log.set[env.log.set.length - 1], "PROXY 127.0.0.1:1", "it is parked on a dead port instead, so nothing leaks");
+  eq(env.log.set[env.log.set.length - 1], "PROXY 0.0.0.1:1", "it is parked on a dead port instead, so nothing leaks");
 
   env.runNextTimer(); // the reconnect
   env.status({ state: "Running", proxyPort: 2222, tailnet: "tail4d5e6f.ts.net" });
   await flush();
-  eq(env.log.set, ["PROXY 127.0.0.1:1111", "PROXY 127.0.0.1:1", "PROXY 127.0.0.1:2222"], "PAC follows the new port, parked in between");
+  eq(env.log.set, ["PROXY 127.0.0.1:1111", "PROXY 0.0.0.1:1", "PROXY 127.0.0.1:2222"], "PAC follows the new port, parked in between");
 });
 
 test("a tailnet rename while Running rewrites the PAC", async () => {
@@ -856,7 +856,7 @@ test("a host restart rotates both the port and the token", async () => {
   env.status({ state: "Running", proxyPort: 2222, tailnet: "tail4d5e6f.ts.net", proxyToken: "second-token" });
   await flush();
 
-  eq(env.log.set, ["PROXY 127.0.0.1:1111", "PROXY 127.0.0.1:1", "PROXY 127.0.0.1:2222"], "the PAC follows the new port, parked in between");
+  eq(env.log.set, ["PROXY 127.0.0.1:1111", "PROXY 0.0.0.1:1", "PROXY 127.0.0.1:2222"], "the PAC follows the new port, parked in between");
   eq(await env.authRequired({ isProxy: true, challenger: { host: "127.0.0.1", port: 2222 } }),
     { authCredentials: { username: "tailtab", password: "second-token" } }, "the new token");
   // The old port is not ours any more.
@@ -1181,13 +1181,13 @@ test("a host restart re-derives exit mode from the new status", async () => {
 
   env.disconnect();
   await flush();
-  eq(env.log.set[env.log.set.length - 1], "PROXY 127.0.0.1:1", "the PAC is parked when the host dies");
+  eq(env.log.set[env.log.set.length - 1], "PROXY 0.0.0.1:1", "the PAC is parked when the host dies");
 
   env.runNextTimer(); // the reconnect
   // The replacement host reports the same selection, on a new port.
   env.status(Object.assign({}, EXIT_RUNNING, { proxyPort: 2222, proxyToken: "tok-BBBB2222" }));
   await flush();
-  eq(env.log.set, ["PROXY 127.0.0.1:1111", "PROXY 127.0.0.1:1", "PROXY 127.0.0.1:2222"], "the PAC follows the new port, parked in between");
+  eq(env.log.set, ["PROXY 127.0.0.1:1111", "PROXY 0.0.0.1:1", "PROXY 127.0.0.1:2222"], "the PAC follows the new port, parked in between");
   if (env.log.lastPac.indexOf("tailtabExitModeProxies") === -1) {
     throw new Error("exit mode was lost across the host restart");
   }
@@ -1287,11 +1287,11 @@ test("a PAC left by an earlier worker is parked at startup, not cleared", async 
   const env = makeEnv({ levelOfControl: "controlled_by_this_extension" });
   await flush();
   eq(env.log.clear, [], "the leftover setting was not cleared: that would leak tailnet names to DNS");
-  eq(env.log.set, ["PROXY 127.0.0.1:1"], "it was parked on a dead port before any host answered");
+  eq(env.log.set, ["PROXY 0.0.0.1:1"], "it was parked on a dead port before any host answered");
 
   env.status(RUNNING);
   await flush();
-  eq(env.log.set, ["PROXY 127.0.0.1:1", "PROXY 127.0.0.1:64378"], "the live host's PAC replaced the parked one once it was Running");
+  eq(env.log.set, ["PROXY 0.0.0.1:1", "PROXY 127.0.0.1:64378"], "the live host's PAC replaced the parked one once it was Running");
   eq(env.log.clear.length, 0, "and nothing was cleared along the way");
 });
 
@@ -1528,6 +1528,9 @@ test("routed subnets are proxied, in both modes, and the PAC knows them", () => 
   eq(rules.tailtabInRoutes("127.0.0.1", ["127.0.0.0/8"]), false, "a route covering loopback is ignored");
   eq(rules.tailtabInRoutes("169.254.169.254", ["169.254.0.0/16"]), false, "a link-local route is ignored");
   eq(rules.tailtabInRoutes("fe80::1", ["fe80::/10"]), false, "an IPv6 link-local route is ignored");
+  eq(rules.tailtabInRoutes("::1", ["::1/128"]), false, "a loopback /128 route is ignored, as the host ignores it");
+  eq(rules.tailtabInRoutes("::1", ["::/16"]), false, "a route starting at :: is ignored");
+  eq(rules.tailtabInRoutes("ff02::1", ["ff02::/16"]), false, "a multicast route is ignored");
   eq(rules.tailtabInRoutes("10.0.0.1", ["10.0.0.0/8"]), true, "/8 is honoured");
   eq(rules.tailtabInRoutes("192.168.1.77", ["192.168.1.0/33", "junk", "192.168.1/24", "300.1.1.1/8"]), false, "malformed routes are ignored");
   const pac = rules.tailtabBuildPac(64378, "tail4d5e6f.ts.net", false, routes);
@@ -1631,7 +1634,7 @@ test("a user disconnect hands the proxy setting back; a crash parks it", async (
   env.disconnect();
   await flush();
   eq(env.log.clear.length, 1, "a crash does not clear it");
-  eq(env.log.set[env.log.set.length - 1], "PROXY 127.0.0.1:1", "it parks it");
+  eq(env.log.set[env.log.set.length - 1], "PROXY 0.0.0.1:1", "it parks it");
   if (env.log.lastPac.indexOf("tailtabIsTailnetHost") === -1) throw new Error("the parked PAC lost the rules");
 });
 
@@ -1643,8 +1646,37 @@ test("the parked PAC keeps exit mode, which is the kill switch", async () => {
   env.disconnect();
   await flush();
   const find = vm.runInNewContext(env.log.lastPac + "\nFindProxyForURL", {});
-  eq(find("https://github.com/", "github.com"), "PROXY 127.0.0.1:1", "public traffic stays blocked while the host is gone");
+  eq(find("https://github.com/", "github.com"), "PROXY 0.0.0.1:1", "public traffic stays blocked while the host is gone");
   eq(find("http://192.168.0.5/", "192.168.0.5"), "DIRECT", "the LAN stays local");
+});
+
+test("a logout hands the proxy setting back like a stop does", async () => {
+  const env = makeEnv();
+  await flush();
+  env.status(RUNNING);
+  await flush();
+  env.status({ state: "NeedsLogin" });
+  await flush();
+  eq(env.log.clear, ["regular"], "logged out by the user clears the setting");
+});
+
+test("the startup park carries the last known rules, not blank ones", async () => {
+  const env = makeEnv({ levelOfControl: "controlled_by_this_extension", session: { status: { tailnet: "corp.example.com", subnetRoutes: ["10.42.0.0/16"], exitNode: "n1" } } });
+  await flush();
+  eq(env.log.set, ["PROXY 0.0.0.1:1"], "parked");
+  const find = vm.runInNewContext(env.log.lastPac + "\nFindProxyForURL", {});
+  eq(find("https://github.com/", "github.com"), "PROXY 0.0.0.1:1", "exit mode from before the restart is still in force (kill switch)");
+  eq(find("http://192.168.0.5/", "192.168.0.5"), "DIRECT", "the LAN stays local");
+});
+
+test("a parked configuration does not fight a policy", async () => {
+  const env = makeEnv({ levelOfControl: "controlled_by_policy" });
+  await flush();
+  env.status(RUNNING);
+  await flush();
+  env.disconnect();
+  await flush();
+  eq(env.log.set, [], "nothing was installed over the policy");
 });
 (async () => {
   let failed = 0;

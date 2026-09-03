@@ -297,22 +297,34 @@ async function clearProxy() {
 // tailnet to whoever answers DNS. In exit mode the parked PAC blocks
 // everything, which is the kill switch. applyProxy replaces it as soon as the
 // host is back.
+// 0.0.0.1 rather than a loopback port: nothing can listen there, on any
+// platform, so a parked request cannot be answered by another local process
+// (a loopback port is bindable by anyone on Windows) and fails at once.
+const PARKED_HOST = "0.0.0.1";
 const PARKED_PORT = 1;
 async function parkProxy() {
   if (USE_ON_REQUEST) return;
+  const control = await new Promise((resolve) =>
+    chrome.proxy.settings.get({}, (v) => resolve(v && v.levelOfControl))
+  );
+  if (control === "controlled_by_policy" || control === "controlled_by_other_extensions") return;
   let pac;
   try {
-    pac = tailtabBuildPac(PARKED_PORT, status.tailnet, exitMode(), status.subnetRoutes);
+    pac = tailtabBuildPac(PARKED_PORT, status.tailnet, exitMode(), status.subnetRoutes, PARKED_HOST);
   } catch (e) {
     await clearProxy();
     return;
   }
-  await new Promise((resolve) =>
+  const failure = await new Promise((resolve) =>
     chrome.proxy.settings.set({ scope: "regular", value: { mode: "pac_script", pacScript: { data: pac, mandatory: false } } }, () => {
-      void chrome.runtime.lastError;
-      resolve();
+      const err = chrome.runtime.lastError;
+      resolve(err && err.message ? err.message : "");
     })
   );
+  if (failure) {
+    proxyProblem = "The browser rejected tailtab's proxy configuration: " + failure;
+    pushToPopups();
+  }
 }
 
 // dropStaleProxy runs once, when the worker starts. Chromium keeps an
@@ -330,6 +342,23 @@ async function dropStaleProxy() {
   );
   if (control !== "controlled_by_this_extension") return;
   console.warn("tailtab: parking the proxy settings left by an earlier worker");
+  // The parked PAC should carry the rules the old one had: the tailnet's
+  // suffix (a custom domain would otherwise leak to DNS), its routes, and
+  // whether an exit node was selected (the kill switch). The last status is
+  // in session storage; nothing else from it is trusted.
+  try {
+    const saved = await api.storage.session.get("status");
+    const st = saved && saved.status;
+    if (st && typeof st === "object") {
+      status = Object.assign({}, status, {
+        tailnet: typeof st.tailnet === "string" ? st.tailnet : "",
+        subnetRoutes: Array.isArray(st.subnetRoutes) ? st.subnetRoutes : [],
+        exitNode: typeof st.exitNode === "string" ? st.exitNode : "",
+      });
+    }
+  } catch (e) {
+    // no session storage: park with the default rules
+  }
   // Parked, not cleared: the stale port must go, but tailnet names must not
   // start leaking to the public resolver while the new host comes up.
   await parkProxy();
@@ -506,10 +535,10 @@ function setStatus(next) {
       applyProxy();
     }
   } else if (wasRunning) {
-    // Stopped by the user: the browser is theirs again. Anything else that
-    // took the node down (host crash, switch in flight) keeps the rules, on a
-    // dead port, so nothing leaks while it recovers.
-    if (next.state === "Stopped") clearProxy();
+    // Stopped or logged out by the user: the browser is theirs again.
+    // Anything else that took the node down (host crash, switch in flight)
+    // keeps the rules, on a dead port, so nothing leaks while it recovers.
+    if (next.state === "Stopped" || next.state === "NeedsLogin") clearProxy();
     else parkProxy();
   }
   pushToPopups();
