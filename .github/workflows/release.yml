@@ -46,7 +46,7 @@ jobs:
           mkdir -p release
           build() { # goos goarch [suffix]
             CGO_ENABLED=0 GOOS="$1" GOARCH="$2" \
-              go build -trimpath -ldflags "$ldflags" -o "release/tailtab-$1-$2$3" ./cmd/tailtab
+              go build -trimpath -ldflags "$ldflags" -o "release/tailtab-$1-$2${3:-}" ./cmd/tailtab
           }
           build darwin arm64
           build darwin amd64
