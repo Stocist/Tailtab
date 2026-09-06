@@ -478,6 +478,7 @@ function openPopupUI() {
     console: { log() {}, warn() {}, error() {} },
     setTimeout: () => 1,
     clearTimeout: () => {},
+    URL: URL,
     window: { close() {} },
     document: {
       getElementById: (id) => els[id] || (els[id] = makeEl()),
@@ -499,6 +500,7 @@ function openPopupUI() {
   };
   sandbox.globalThis = sandbox;
   const ctx = vm.createContext(sandbox);
+  vm.runInContext(read("rules.js"), ctx, { filename: "rules.js" });
   vm.runInContext(read("popup.js"), ctx, { filename: "popup.js" });
 
   return {
@@ -1578,6 +1580,47 @@ test("the installed PAC is mandatory, so a script failure blocks instead of goin
   env.disconnect();
   await flush();
   eq(env.log.lastValue.pacScript.mandatory, true, "parked");
+});
+
+test("a machine opens only as a bare tailnet host", () => {
+  const ui = openPopupUI();
+  const push = (peers) => ui.push({ connected: true, status: { state: "Running", tailnet: "t.ts.net", proxyPort: 1, warnings: [], accounts: [], peers: peers } });
+  const click = (i) => ui.els.machines.children[i].children[0].listeners.click();
+  push([
+    { name: "server", dnsName: "server.t.ts.net", ip: "100.80.1.7", online: true },
+    { name: "evil", dnsName: "evil.com", ip: "100.80.1.8", online: true },
+    { name: "foo", dnsName: "foo@127.0.0.1", ip: "100.80.1.9", online: true },
+  ]);
+  eq(ui.els.machines.children[0].children[0].title, "Open http://server.t.ts.net/", "the link offered matches what opens");
+  eq(ui.els.machines.children[1].children[0].title, "", "no link is offered for a name that will not open");
+  click(0); click(1); click(2);
+  push([
+    { name: "local", dnsName: "127.0.0.1:8080", ip: "100.80.1.10", online: true },
+    { name: "path", dnsName: "server.t.ts.net/admin", ip: "100.80.1.11", online: true },
+    { name: "", dnsName: "", ip: "100.80.1.12", online: true },
+  ]);
+  click(0); click(1); click(2);
+  eq(ui.opened, ["http://server.t.ts.net/", "http://100.80.1.12/"], "only the tailnet name and the tailnet address were opened");
+});
+
+test("an avatar loads only over https from a public host", () => {
+  const ui = openPopupUI();
+  const pictures = [
+    "http://avatars.example/a.png",
+    "https://127.0.0.1/a.png",
+    "https://localhost/a.png",
+    "https://192.168.1.1/a.png",
+    "https://[::1]/a.png",
+    "https://user:pw@avatars.example/a.png",
+    "https://avatars.example:8443/a.png",
+    "javascript:alert(1)",
+  ];
+  for (const picture of pictures) {
+    ui.push({ connected: true, status: { state: "Running", tailnet: "t.ts.net", proxyPort: 1, warnings: [],
+      accounts: [{ id: "p1", name: "alice@github", displayName: "Alice", picture: picture, tailnet: "t.ts.net", active: true }] } });
+    eq(ui.els.avatar.children.length, 0, "no picture for " + picture);
+    eq(ui.els.avatar.textContent, "A", "the initial stands in for " + picture);
+  }
 });
 
 (async () => {

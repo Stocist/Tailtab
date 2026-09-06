@@ -129,13 +129,19 @@ function accountLabel(account) {
   return account.displayName || account.name || "Signed in";
 }
 
-// renderAvatar shows the account's picture, or its initial, or the neutral
-// mark when there is no account.
+// The picture URL comes from the identity provider: https, no credentials or port, somewhere public.
+function avatarURL(picture) {
+  let u;
+  try { u = new URL(picture || ""); } catch (e) { return ""; }
+  if (u.protocol !== "https:" || u.username || u.password || u.port) return "";
+  return tailtabExitModeProxies(u.hostname, []) ? u.href : "";
+}
+
 function renderAvatar(active) {
   const avatar = el("avatar");
   const label = active ? accountLabel(active) : "";
   const letter = label && /^[a-z0-9]/i.test(label) ? label[0].toUpperCase() : "t";
-  const picture = active && active.picture && /^https:\/\//.test(active.picture) ? active.picture : "";
+  const picture = active ? avatarURL(active.picture) : "";
   if (picture) {
     avatar.textContent = "";
     const img = document.createElement("img");
@@ -238,8 +244,9 @@ function renderMachines(st, running) {
     const name = document.createElement("button");
     name.className = "name" + (peer.online ? "" : " off");
     name.textContent = peer.name || peer.dnsName || peer.ip;
-    name.title = peer.online ? "Open http://" + (peer.dnsName || peer.name) + "/" : "Offline";
-    name.addEventListener("click", () => openPeer(peer));
+    const url = peer.online ? peerURL(peer, st) : "";
+    name.title = peer.online ? (url ? "Open " + url : "") : "Offline";
+    name.addEventListener("click", () => openPeer(url));
     const ip = document.createElement("button");
     ip.className = "v copy";
     ip.textContent = peer.ip || "";
@@ -286,10 +293,28 @@ function renderMachines(st, running) {
   }
 }
 
-function openPeer(peer) {
-  const host = peer.dnsName || peer.name;
-  if (!host) return;
-  api.tabs.create({ url: "http://" + host + "/" });
+// The name comes from the control plane: open it only as a bare tailnet host.
+function peerURL(peer, st) {
+  const host = String(peer.dnsName || peer.name || peer.ip || "").toLowerCase();
+  if (!host) return "";
+  let u;
+  try { u = new URL("http://" + host + "/"); } catch (e) { return ""; }
+  if (u.hostname !== host || u.username || u.password || u.port || u.pathname !== "/" || u.search || u.hash) return "";
+  return tailtabIsTailnetHost(host, st.tailnet, []) ? u.href : "";
+}
+
+function openPeer(url) {
+  if (!url) return;
+  api.tabs.create({ url: url });
+  window.close();
+}
+
+// Control chooses the login URL; only an https page is opened.
+function openLogin(url) {
+  let u;
+  try { u = new URL(url); } catch (e) { return; }
+  if (u.protocol !== "https:") return;
+  api.tabs.create({ url: u.href });
   window.close();
 }
 
