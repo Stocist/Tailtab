@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
-# Prints the -ldflags for building the host, so build.sh and the release
-# workflow stamp the same version: "<tailscale version>-tailtab-<build id>".
-#
-#   TAILTAB_VERSION   overrides the build id (a release tag such as 0.1.0);
-#                     otherwise the short commit, plus -dirty for local edits.
+# Centralized stamping keeps local and release host versions synchronized.
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 go="${GO:-go}"

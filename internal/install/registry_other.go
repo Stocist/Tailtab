@@ -4,8 +4,7 @@ package install
 
 import "errors"
 
-// Only Windows targets carry a registry key, so these are never reached off
-// Windows; they exist so the package compiles everywhere.
+// Registry helpers are unreachable for non-Windows targets.
 func setRegistryPath(key, path string) error {
 	return errors.New("registry keys exist only on Windows")
 }

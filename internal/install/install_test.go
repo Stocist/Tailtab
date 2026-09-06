@@ -20,11 +20,11 @@ func TestValidChromiumID(t *testing.T) {
 	}
 	bad := []string{
 		"",
-		"abcdefghijklmnopabcdefghijklmno",   // 31 characters
-		"abcdefghijklmnopabcdefghijklmnopq", // 33 characters
-		"abcdefghijklmnopabcdefghijklmnoq",  // q is outside a-p
-		"ABCDEFGHIJKLMNOPABCDEFGHIJKLMNOP",  // uppercase
-		"abcdefghijklmno0abcdefghijklmnop",  // digit
+		"abcdefghijklmnopabcdefghijklmno",
+		"abcdefghijklmnopabcdefghijklmnopq",
+		"abcdefghijklmnopabcdefghijklmnoq",
+		"ABCDEFGHIJKLMNOPABCDEFGHIJKLMNOP",
+		"abcdefghijklmno0abcdefghijklmnop",
 		"../../../../etc/passwd",
 	}
 	for _, id := range bad {
@@ -48,12 +48,12 @@ func TestValidGeckoID(t *testing.T) {
 	}
 	bad := []string{
 		"",
-		"tailtab",                              // no domain
-		"tailtab@",                             // no domain
-		"@stocist.dev",                         // no local part
-		"tailtab@stocist.dev/../x",             // path characters
-		"tailtab @stocist.dev",                 // space
-		"0f8fad5b-d9cb-469f-a165-70867728950e", // a UUID needs braces
+		"tailtab",
+		"tailtab@",
+		"@stocist.dev",
+		"tailtab@stocist.dev/../x",
+		"tailtab @stocist.dev",
+		"0f8fad5b-d9cb-469f-a165-70867728950e",
 		"{0F8FAD5B-D9CB-469F-A165-70867728950E}",
 		"tailtab@stocist.dev\n",
 	}
@@ -87,8 +87,6 @@ func TestTargetsRejectsBadInput(t *testing.T) {
 
 func TestInstallAndUninstall(t *testing.T) {
 	home := t.TempDir()
-	// Chrome is not installed here, but a Chrome-shaped directory holding a
-	// sibling host proves the uninstaller leaves other manifests alone.
 	otherHost := filepath.Join(home, "Library", "Application Support", "Microsoft Edge", "NativeMessagingHosts", "com.example.other.json")
 	if err := os.MkdirAll(filepath.Dir(otherHost), 0o755); err != nil {
 		t.Fatal(err)
@@ -134,7 +132,6 @@ func TestInstallAndUninstall(t *testing.T) {
 		t.Error("something was written under the zen application-support directory")
 	}
 
-	// A second install over the top must be idempotent.
 	if _, err := Install(opts); err != nil {
 		t.Fatalf("second Install: %v", err)
 	}
@@ -152,7 +149,6 @@ func TestInstallAndUninstall(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, "Library", "Application Support", "Microsoft Edge", "NativeMessagingHosts")); err != nil {
 		t.Errorf("Uninstall removed the directory itself: %v", err)
 	}
-	// Removing what is already gone is not an error.
 	if removed, err := uninstall("darwin", home, ""); err != nil || len(removed) != 0 {
 		t.Errorf("second Uninstall = %v, %v; want no files and no error", removed, err)
 	}

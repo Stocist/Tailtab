@@ -20,8 +20,7 @@ import (
 	"sync"
 )
 
-// MaxMsgSize is the largest message we will read or write, in bytes.
-// Chromium's own limit for host->browser messages is 1 MiB.
+// MaxMsgSize is Chromium's 1 MiB native-messaging limit.
 const MaxMsgSize = 1 << 20
 
 // Command is an extension -> host command name.
@@ -33,54 +32,42 @@ const (
 	CmdUp     Command = "up"
 	CmdDown   Command = "down"
 	CmdLogout Command = "logout"
-	// CmdExitNode selects an exit node by stable ID, or clears the selection
-	// when ID is empty.
+	// CmdExitNode selects an exit node by stable ID, or clears it for an empty ID.
 	CmdExitNode Command = "exitnode"
-	// CmdSwitch switches to another logged-in account (a Tailscale login
-	// profile) by its profile ID.
+	// CmdSwitch activates a login profile by ID.
 	CmdSwitch Command = "switch"
-	// CmdAddAccount starts a login for a new account, keeping the existing
-	// ones.
+	// CmdAddAccount starts another login profile.
 	CmdAddAccount Command = "addaccount"
 )
 
-// Request is a message from the browser extension. Nothing in it is trusted.
+// Request is an untrusted message from the browser extension.
 type Request struct {
 	Cmd Command `json:"cmd"`
 
-	// ProfileID identifies the browser profile. It becomes a filesystem path
-	// component, so it must be a lowercase UUID; see ValidProfileID.
+	// ProfileID must pass ValidProfileID before becoming a path component.
 	ProfileID string `json:"profileID,omitempty"`
 
-	// Browser is "zen" or "edge". It is only used to build a node hostname.
+	// Browser is validated before becoming part of a node hostname.
 	Browser string `json:"browser,omitempty"`
 
-	// ControlURL is a custom coordination server (Headscale, for instance),
-	// for CmdInit (the node's first login) and CmdAddAccount (a new login).
-	// Empty means Tailscale's. Validated by ValidControlURL before use.
+	// ControlURL must pass ValidControlURL before entering node preferences.
 	ControlURL string `json:"controlURL,omitempty"`
 
-	// ID is the exit node's stable node ID for CmdExitNode (empty selects no
-	// exit node), or the account's profile ID for CmdSwitch. Either is checked
-	// against what the node reported before it is used.
+	// ID must match an exit node or account reported by the node.
 	ID string `json:"id,omitempty"`
 }
 
-// Account is one Tailscale login profile held by this node, for the account
-// switcher in the popup.
+// Account is a Tailscale login profile held by the node.
 type Account struct {
-	ID string `json:"id"`
-	// Name is the login name, e.g. "user@github"; DisplayName the human one,
-	// e.g. "Alice"; Picture the avatar URL the identity provider gave.
+	ID          string `json:"id"`
 	Name        string `json:"name"`
 	DisplayName string `json:"displayName,omitempty"`
 	Picture     string `json:"picture,omitempty"`
-	// Tailnet is the MagicDNS suffix of that account's tailnet.
-	Tailnet string `json:"tailnet,omitempty"`
-	Active  bool   `json:"active"`
+	Tailnet     string `json:"tailnet,omitempty"`
+	Active      bool   `json:"active"`
 }
 
-// Peer is one machine on the tailnet, for the popup's machine search.
+// Peer is a machine on the current tailnet.
 type Peer struct {
 	Name    string `json:"name"`
 	DNSName string `json:"dnsName,omitempty"`
@@ -89,7 +76,7 @@ type Peer struct {
 	OS      string `json:"os,omitempty"`
 }
 
-// ExitNode is one exit-node offer, as the popup's picker needs it.
+// ExitNode is an advertised exit node.
 type ExitNode struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
@@ -98,53 +85,36 @@ type ExitNode struct {
 	OS      string `json:"os,omitempty"`
 }
 
-// Event is a message from the host to the browser extension. Exactly one of
-// the two event names is used: "status" or "error".
+// Event is a status or error message sent to the browser extension.
 type Event struct {
 	Event string `json:"event"`
 
-	// State is an ipn.State string, passed through verbatim:
-	// NoState, NeedsMachineAuth, NeedsLogin, Starting, Running, Stopped.
+	// State passes ipn.State through verbatim so new states reach the UI.
 	State     string `json:"state,omitempty"`
 	AuthURL   string `json:"authURL,omitempty"`
 	Tailnet   string `json:"tailnet,omitempty"`
 	Hostname  string `json:"hostname,omitempty"`
 	SelfIP    string `json:"selfIP,omitempty"`
 	ProxyPort int    `json:"proxyPort,omitempty"`
-	// ProxyToken is the password half of the proxy credential, regenerated
-	//per process start. It is a secret shared with this one extension: never
-	// log an event wholesale, never show it in the popup, never write it to
-	// storage.local.
+	// ProxyToken is a per-process secret; never log, display, or persist it.
 	ProxyToken string `json:"proxyToken,omitempty"`
 	Error      string `json:"error,omitempty"`
 
-	// ExitNodes is every exit node this tailnet offers, for the picker. It is
-	// empty on most tailnets, and the popup shows no picker then.
 	ExitNodes []ExitNode `json:"exitNodes,omitempty"`
-	// ExitNode is the stable ID of the selected one, "" for none.
+	// ExitNode is the selected stable ID; empty means none.
 	ExitNode string `json:"exitNode,omitempty"`
-	// ExitNodeActive is whether that node is online and carrying traffic.
-	// Selected but not active means browsing is blocked, not rerouted: both
-	// the browser's rules and the host's guard key off this pair (G14, G15).
-	ExitNodeActive bool `json:"exitNodeActive,omitempty"`
-	// Warnings is the backend's unhealthy warnables, as text for the popup.
-	Warnings []string `json:"warnings,omitempty"`
-	// Accounts is every login profile this node holds, with the active one
-	// marked. Empty until the first login has completed.
-	Accounts []Account `json:"accounts,omitempty"`
-	// Peers is the tailnet's machines, for the popup's search box.
-	Peers []Peer `json:"peers,omitempty"`
-	// SubnetRoutes is every subnet a peer routes for this tailnet, as CIDRs.
-	// The browser's rules send addresses inside them to the proxy.
+	// ExitNodeActive gates routing; selected but inactive must fail closed.
+	ExitNodeActive bool      `json:"exitNodeActive,omitempty"`
+	Warnings       []string  `json:"warnings,omitempty"`
+	Accounts       []Account `json:"accounts,omitempty"`
+	Peers          []Peer    `json:"peers,omitempty"`
+	// SubnetRoutes widens routing only to peer-advertised CIDRs.
 	SubnetRoutes []string `json:"subnetRoutes,omitempty"`
-	// ControlURL is the coordination server the active account uses.
-	ControlURL string `json:"controlURL,omitempty"`
+	ControlURL   string   `json:"controlURL,omitempty"`
 }
 
-// ValidControlURL reports whether s can be used as a coordination server URL:
-// http or https, a host, no credentials, no fragment, and not absurdly long.
-// The value comes from the extension's settings page and ends up in the
-// node's prefs, so it is checked at the boundary.
+// ValidControlURL validates an extension-provided URL before it enters node
+// preferences.
 func ValidControlURL(s string) error {
 	if s == "" {
 		return nil
@@ -171,7 +141,7 @@ func ValidControlURL(s string) error {
 	return nil
 }
 
-// StatusEvent returns an empty status event, ready to be filled in.
+// StatusEvent returns an empty status event.
 func StatusEvent() *Event { return &Event{Event: "status"} }
 
 // ErrorEvent returns an error event carrying err's text.
@@ -181,22 +151,20 @@ func ErrorEvent(err error) *Event {
 
 var profileIDRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
-// ValidProfileID reports whether id is a lowercase-hex UUID and therefore safe
-// to use as a single filesystem path component. Anything else is rejected
-// before it can reach a path join.
+// ValidProfileID reports whether id is a lowercase UUID safe for one path
+// component.
 func ValidProfileID(id string) bool { return profileIDRE.MatchString(id) }
 
-// Codec reads Requests from r and writes Events to w. Writes are serialized by
-// an internal mutex so a status push from the IPN bus cannot interleave with a
-// command reply. Reads are not safe for concurrent use.
+// Codec reads Requests and writes Events. Writes are serialized so bus pushes
+// cannot interleave with command replies; reads are not concurrent-safe.
 type Codec struct {
 	br *bufio.Reader
 	w  io.Writer
 
 	wmu sync.Mutex // guards w and wlen
 
-	rlen [4]byte // owned by Read
-	wlen [4]byte // guarded by wmu
+	rlen [4]byte
+	wlen [4]byte
 }
 
 // NewCodec returns a Codec reading from r and writing to w.
@@ -204,9 +172,8 @@ func NewCodec(r io.Reader, w io.Writer) *Codec {
 	return &Codec{br: bufio.NewReaderSize(r, 4096), w: w}
 }
 
-// Read returns the next Request. A malformed JSON body is reported as an error
-// but leaves the stream in sync, so the caller may keep reading; a framing or
-// I/O error is terminal.
+// Read returns the next Request. Invalid JSON preserves framing; framing and
+// I/O errors are terminal.
 func (c *Codec) Read() (*Request, error) {
 	if _, err := io.ReadFull(c.br, c.rlen[:]); err != nil {
 		return nil, err
@@ -226,8 +193,7 @@ func (c *Codec) Read() (*Request, error) {
 	return req, nil
 }
 
-// BadJSONError reports a message that was framed correctly but did not contain
-// valid JSON. The stream is still in sync, so the read loop can continue.
+// BadJSONError reports invalid JSON whose framing remains synchronized.
 type BadJSONError struct{ Err error }
 
 func (e *BadJSONError) Error() string { return "nm: invalid JSON message body: " + e.Err.Error() }

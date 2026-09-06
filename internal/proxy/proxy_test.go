@@ -22,17 +22,10 @@ import (
 	"time"
 )
 
-// testToken is the proxy credential these tests use. The real one is 32 random
-// bytes per host process; the value does not matter here, only that every
-// request has to carry it.
 const testToken = "TESTTOKEN-not-a-real-secret"
 
-// testAuthHeader is what a client sends: Basic base64("tailtab:<token>").
 var testAuthHeader = "Basic " + base64.StdEncoding.EncodeToString([]byte(User+":"+testToken))
 
-// proxyClient returns an HTTP client that proxies through p with the
-// credential. Go puts the userinfo from the proxy URL into Proxy-Authorization
-// on both plain requests and CONNECT.
 func proxyClient(p *Server) *http.Client {
 	u, err := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", p.Port()))
 	if err != nil {
@@ -42,9 +35,6 @@ func proxyClient(p *Server) *http.Client {
 	return &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(u)}, Timeout: 10 * time.Second}
 }
 
-// recordingDialer stands in for the tailnet dialer: it records the address it
-// was asked for, which is how these tests prove the hostname reaches the dialer
-// unresolved, then connects to a real local server.
 type recordingDialer struct {
 	target string
 	mu     sync.Mutex
@@ -81,8 +71,6 @@ func TestPlainHTTPIsProxiedByHostname(t *testing.T) {
 	}
 
 	c := proxyClient(p)
-	// A single-label MagicDNS name, which is exactly what must not be resolved
-	// before it reaches the dialer.
 	resp, err := c.Get("http://wiki/hello")
 	if err != nil {
 		t.Fatalf("GET through the proxy: %v", err)
@@ -101,7 +89,6 @@ func TestPlainHTTPIsProxiedByHostname(t *testing.T) {
 }
 
 func TestConnectTunnels(t *testing.T) {
-	// A raw TCP echo server stands in for an HTTPS origin on the tailnet.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -131,9 +118,7 @@ func TestConnectTunnels(t *testing.T) {
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
 
-	// Send the payload immediately after the CONNECT request so it lands in the
-	// server's bufio.Reader: the handler has to flush those buffered bytes into
-	// the tunnel or they are lost.
+	// Exercise payload integrity when CONNECT parsing buffers tunnel bytes.
 	if _, err := io.WriteString(conn, "CONNECT wiki.tail4d5e6f.ts.net:443 HTTP/1.1\r\nHost: wiki.tail4d5e6f.ts.net:443\r\n"+
 		"Proxy-Authorization: "+testAuthHeader+"\r\n\r\nping"); err != nil {
 		t.Fatalf("writing CONNECT: %v", err)
@@ -146,7 +131,7 @@ func TestConnectTunnels(t *testing.T) {
 	if !strings.HasPrefix(line, "HTTP/1.1 200") {
 		t.Fatalf("CONNECT response %q, want 200", strings.TrimSpace(line))
 	}
-	if _, err := br.ReadString('\n'); err != nil { // the blank line
+	if _, err := br.ReadString('\n'); err != nil {
 		t.Fatalf("reading the header terminator: %v", err)
 	}
 	echoed := make([]byte, 4)
@@ -209,20 +194,15 @@ func TestOriginStyleRequestRejected(t *testing.T) {
 	}
 }
 
-// hostCase is one row of testdata/tailnet-hosts.json, the decision table this
-// guard shares with extension/rules.js.
+// hostCase is shared by the browser and host routing-policy tests.
 type hostCase struct {
-	Host   string `json:"host"`
-	Suffix string `json:"suffix"`
-	Proxy  bool   `json:"proxy"`
-	Why    string `json:"why"`
-	// Routes is the subnet routes the node knows at the time, as CIDRs.
+	Host   string   `json:"host"`
+	Suffix string   `json:"suffix"`
+	Proxy  bool     `json:"proxy"`
+	Why    string   `json:"why"`
 	Routes []string `json:"routes"`
 }
 
-// prefixes parses a table row's routes the way the host does before they
-// reach the guard (parseRoutes in cmd/tailtab): a malformed one is dropped, so
-// the table can say that a bad route widens nothing.
 func prefixes(t *testing.T, cidrs []string) []netip.Prefix {
 	t.Helper()
 	var out []netip.Prefix
@@ -252,9 +232,7 @@ func loadHostCases(t *testing.T) []hostCase {
 	return table.Cases
 }
 
-// TestAllowTailnetHost drives the guard from the same table extension/rules.js
-// is tested against. The two implementations are held together by this file:
-// a host the extension proxies but the guard refuses is a 403 the user sees.
+// Browser and host routing decisions must remain identical.
 func TestAllowTailnetHost(t *testing.T) {
 	for _, c := range loadHostCases(t) {
 		err := allowTailnetHost(c.Host, c.Suffix, prefixes(t, c.Routes))
@@ -271,10 +249,7 @@ func TestAllowTailnetHost(t *testing.T) {
 	}
 }
 
-// TestCustomMagicDNSSuffixIsRefusedUntilKnown is R1: a tailnet on a custom
-// domain is proxied by the extension, so the guard has to serve it — but only
-// once the node has actually reported that suffix, never on a name the browser
-// happened to send.
+// Custom domains remain blocked until the node reports a trusted suffix.
 func TestCustomMagicDNSSuffixIsRefusedUntilKnown(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "reached")
@@ -313,7 +288,6 @@ func TestCustomMagicDNSSuffixIsRefusedUntilKnown(t *testing.T) {
 		t.Errorf("after the suffix is known: status %d body %q, want 200 \"reached\"", resp.StatusCode, body)
 	}
 
-	// The SOCKS path reads the same suffix, through the dialer guard.
 	if code := socks5Connect(t, p.Port(), "host.my-tailnet.example.com", 80); code != 0 {
 		t.Errorf("SOCKS5 CONNECT to the custom domain: reply code %d, want 0", code)
 	}
@@ -323,8 +297,6 @@ func TestCustomMagicDNSSuffixIsRefusedUntilKnown(t *testing.T) {
 }
 
 func TestNonTailnetDestinationsAreRefused(t *testing.T) {
-	// The dialer must never be reached: this listener is not an open forward
-	// proxy, whatever UserDial would have been willing to do.
 	dialed := false
 	p, err := start(func(context.Context, string, string) (net.Conn, error) {
 		dialed = true
@@ -346,7 +318,6 @@ func TestNonTailnetDestinationsAreRefused(t *testing.T) {
 		t.Errorf("plain GET to github.com: status %d, want 403", resp.StatusCode)
 	}
 
-	// CONNECT, the path a browser uses for https.
 	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", p.Port()))
 	if err != nil {
 		t.Fatal(err)
@@ -367,16 +338,12 @@ func TestNonTailnetDestinationsAreRefused(t *testing.T) {
 	}
 }
 
-// SOCKS5 method numbers, from RFC 1928.
 const (
 	socksNoAuth       = byte(0)
 	socksPassword     = byte(2)
 	socksNoAcceptable = byte(0xff)
 )
 
-// socks5Greet opens a connection to the proxy and offers the given
-// authentication methods. It returns the connection and the method the server
-// chose; 0xff means it accepted none of them.
 func socks5Greet(t *testing.T, proxyPort int, methods ...byte) (net.Conn, byte) {
 	t.Helper()
 	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort))
@@ -400,9 +367,6 @@ func socks5Greet(t *testing.T, proxyPort int, methods ...byte) (net.Conn, byte) 
 	return conn, reply[1]
 }
 
-// socks5Auth runs the RFC 1929 username/password exchange and returns the
-// server's status byte; 0 is success. A server that hangs up instead of
-// answering is a refusal too.
 func socks5Auth(t *testing.T, conn net.Conn, user, pass string) byte {
 	t.Helper()
 	msg := []byte{1, byte(len(user))}
@@ -419,11 +383,9 @@ func socks5Auth(t *testing.T, conn net.Conn, user, pass string) byte {
 	return reply[1]
 }
 
-// socks5Request sends a CONNECT for host:port and returns the reply code. 0 is
-// success; anything else is a refusal.
 func socks5Request(t *testing.T, conn net.Conn, host string, port uint16) byte {
 	t.Helper()
-	req := []byte{5, 1, 0, 3, byte(len(host))} // CONNECT, domain name
+	req := []byte{5, 1, 0, 3, byte(len(host))}
 	req = append(req, host...)
 	req = append(req, byte(port>>8), byte(port))
 	if _, err := conn.Write(req); err != nil {
@@ -436,8 +398,6 @@ func socks5Request(t *testing.T, conn net.Conn, host string, port uint16) byte {
 	return reply[1]
 }
 
-// socks5Connect performs an authenticated SOCKS5 CONNECT and returns the reply
-// code. 0 is success; anything else is a refusal.
 func socks5Connect(t *testing.T, proxyPort int, host string, port uint16) byte {
 	t.Helper()
 	conn, method := socks5Greet(t, proxyPort, socksPassword)
@@ -451,8 +411,6 @@ func socks5Connect(t *testing.T, proxyPort int, host string, port uint16) byte {
 }
 
 func TestSOCKSRefusesNonTailnetDestinations(t *testing.T) {
-	// SOCKS has no handler in front of it, so the guard has to live on the
-	// dialer itself.
 	dialed := make(chan string, 4)
 	p, err := start(func(_ context.Context, _, addr string) (net.Conn, error) {
 		dialed <- addr
@@ -472,8 +430,6 @@ func TestSOCKSRefusesNonTailnetDestinations(t *testing.T) {
 	default:
 	}
 
-	// A tailnet name gets through the guard and fails at the dialer instead,
-	// which proves the refusal above was the guard and not a broken SOCKS path.
 	if code := socks5Connect(t, p.Port(), "wiki", 80); code == 0 {
 		t.Error("SOCKS5 CONNECT reported success with no node running")
 	}
@@ -512,10 +468,6 @@ func TestXForwardedForIsNotAdded(t *testing.T) {
 	}
 }
 
-// --------------------------------------------------------------- H2, auth
-
-// connectStatus opens a raw connection, sends a CONNECT with the given
-// Proxy-Authorization header value ("" for none), and returns the status line.
 func connectStatus(t *testing.T, proxyPort int, auth string) string {
 	t.Helper()
 	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort))
@@ -537,8 +489,6 @@ func connectStatus(t *testing.T, proxyPort int, auth string) string {
 	if err != nil {
 		t.Fatalf("reading the CONNECT response: %v", err)
 	}
-	// Drain the headers so the 407's Proxy-Authenticate can be read by the
-	// caller through the same reader.
 	hdrs := map[string]string{}
 	for {
 		h, err := br.ReadString('\n')
@@ -557,9 +507,7 @@ func connectStatus(t *testing.T, proxyPort int, auth string) string {
 	return strings.TrimSpace(line)
 }
 
-// Any local process can open the loopback port. Without a credential it can
-// also borrow this browser profile's tailnet identity, which is what these
-// tests close.
+// Loopback access must not grant another process the profile's tailnet identity.
 func TestHTTPRequiresTheToken(t *testing.T) {
 	dialed := false
 	p, err := start(func(context.Context, string, string) (net.Conn, error) {
@@ -585,7 +533,6 @@ func TestHTTPRequiresTheToken(t *testing.T) {
 			t.Errorf("CONNECT with %s: %q, want 407", tc.name, got)
 		}
 	}
-	// Plain HTTP, the other half of the proxy.
 	plain := &http.Client{
 		Transport: &http.Transport{Proxy: func(*http.Request) (*url.URL, error) {
 			return url.Parse(fmt.Sprintf("http://127.0.0.1:%d", p.Port()))
@@ -607,9 +554,6 @@ func TestHTTPRequiresTheToken(t *testing.T) {
 		t.Fatal("an unauthenticated request reached the tailnet dialer")
 	}
 
-	// The same credential that works over SOCKS gets through here, which is
-	// what proves the refusals above were the credential check and not a
-	// broken handler.
 	if got := connectStatus(t, p.Port(), testAuthHeader); strings.HasPrefix(got, "HTTP/1.1 407") {
 		t.Errorf("CONNECT with the right credential: %q, want past the 407", got)
 	}
@@ -618,7 +562,7 @@ func TestHTTPRequiresTheToken(t *testing.T) {
 	}
 }
 
-// The credential is for this hop. A tailnet service must never see it.
+// Proxy credentials must not cross the tailnet trust boundary.
 func TestProxyAuthorizationIsNotForwarded(t *testing.T) {
 	got := make(chan string, 1)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -657,11 +601,9 @@ func TestSOCKSRequiresTheToken(t *testing.T) {
 	}
 	defer p.Close()
 
-	// A client offering only "no authentication" is refused outright.
 	if _, method := socks5Greet(t, p.Port(), socksNoAuth); method != socksNoAcceptable {
 		t.Errorf("the server accepted method %d for a no-auth client, want 0xff", method)
 	}
-	// Offering both, the server must still pick password authentication.
 	conn, method := socks5Greet(t, p.Port(), socksNoAuth, socksPassword)
 	if method != socksPassword {
 		t.Fatalf("the server chose method %d, want password authentication", method)
@@ -682,7 +624,6 @@ func TestSOCKSRequiresTheToken(t *testing.T) {
 	default:
 	}
 
-	// The right credential gets through to the guarded dialer, and no further.
 	if code := socks5Connect(t, p.Port(), "wiki", 80); code == 0 {
 		t.Error("SOCKS5 CONNECT reported success with no node running")
 	}
@@ -696,8 +637,6 @@ func TestSOCKSRequiresTheToken(t *testing.T) {
 	}
 }
 
-// A guess must not be able to learn how much of the credential it got right
-// from how long the answer took.
 func TestCredentialsAreComparedInConstantTime(t *testing.T) {
 	src, err := os.ReadFile("proxy.go")
 	if err != nil {
@@ -706,8 +645,7 @@ func TestCredentialsAreComparedInConstantTime(t *testing.T) {
 	if !strings.Contains(string(src), "subtle.ConstantTimeCompare") {
 		t.Error("the credential comparison is not subtle.ConstantTimeCompare")
 	}
-	// Both comparisons must run: a short circuit on the username is a timing
-	// oracle for the username.
+	// A username short circuit would create a timing oracle.
 	if strings.Contains(string(src), "userOK && passOK") {
 		t.Error("the two comparisons are short-circuited, which leaks the username by timing")
 	}
@@ -743,10 +681,7 @@ func TestNewTokenIsLongAndRandom(t *testing.T) {
 	}
 }
 
-// ------------------------------------------- FIX 2, the suffix from control
-
-// The suffix widens the split tunnel wherever it is used, and it comes from
-// whichever coordination server the node is talking to.
+// Control-provided suffixes widen routing and require strict validation.
 func TestValidMagicDNSSuffix(t *testing.T) {
 	good := []string{
 		"tail4d5e6f.ts.net",
@@ -801,9 +736,6 @@ func TestARefusedSuffixLeavesTheRuleAlone(t *testing.T) {
 		t.Fatalf("a good suffix was not kept: %q", p.MagicDNSSuffix())
 	}
 
-	// Control now says something that would route the internet through the
-	// tailnet. The suffix is dropped, taking the good one with it, and the
-	// .ts.net and single-label rules are what is left.
 	p.SetMagicDNSSuffix("com")
 	if got := p.MagicDNSSuffix(); got != "" {
 		t.Errorf("MagicDNSSuffix() = %q after a refused suffix, want empty", got)
@@ -815,29 +747,23 @@ func TestARefusedSuffixLeavesTheRuleAlone(t *testing.T) {
 		t.Errorf("a .ts.net name is refused after a bad suffix: %v", err)
 	}
 
-	// Once, not on every status refresh.
 	for i := 0; i < 5; i++ {
 		p.SetMagicDNSSuffix("com")
 	}
 	if n := strings.Count(logged.String(), "ignoring the MagicDNS suffix"); n != 1 {
 		t.Errorf("the refusal was logged %d times, want 1:\n%s", n, logged.String())
 	}
-	// A different bad suffix is worth saying again.
 	p.SetMagicDNSSuffix("net")
 	if n := strings.Count(logged.String(), "ignoring the MagicDNS suffix"); n != 2 {
 		t.Errorf("a second, different bad suffix was logged %d times in total, want 2", n)
 	}
-	// And a good one afterwards is accepted.
 	p.SetMagicDNSSuffix(".my-tailnet.example.com.")
 	if got := p.MagicDNSSuffix(); got != "my-tailnet.example.com" {
 		t.Errorf("MagicDNSSuffix() = %q, want the trimmed good suffix", got)
 	}
 }
 
-// ------------------------------------------ NIT 2, the handshake deadline
-
-// A client that connects and goes quiet has not authenticated yet, and must not
-// be able to hold a socket and a goroutine open indefinitely.
+// Unauthenticated clients must not hold sockets indefinitely.
 func TestAStalledSOCKSHandshakeIsClosed(t *testing.T) {
 	old := socksHandshakeTimeout
 	socksHandshakeTimeout = 250 * time.Millisecond
@@ -855,7 +781,6 @@ func TestAStalledSOCKSHandshakeIsClosed(t *testing.T) {
 	if method != socksPassword {
 		t.Fatalf("the server chose method %d, want password authentication", method)
 	}
-	// Never send the credential. The server should give up on its own.
 	conn.SetDeadline(time.Now().Add(5 * time.Second))
 	start := time.Now()
 	if _, err := io.ReadFull(conn, make([]byte, 1)); err == nil {
@@ -866,8 +791,7 @@ func TestAStalledSOCKSHandshakeIsClosed(t *testing.T) {
 	}
 }
 
-// The deadline is for the handshake, not the tunnel: a transfer that has
-// authenticated must not be cut off part-way through.
+// Handshake deadlines must not cut off authenticated tunnels.
 func TestAnAuthenticatedTunnelOutlivesTheHandshakeDeadline(t *testing.T) {
 	old := socksHandshakeTimeout
 	socksHandshakeTimeout = 250 * time.Millisecond
@@ -905,9 +829,7 @@ func TestAnAuthenticatedTunnelOutlivesTheHandshakeDeadline(t *testing.T) {
 	if code := socks5Request(t, conn, "wiki", 80); code != 0 {
 		t.Fatalf("CONNECT reply code %d, want 0", code)
 	}
-	// The bound-address part of the reply, which socks5Request leaves unread:
-	// one address type byte was consumed with the reply, so read the IPv4
-	// address and port that follow.
+	// Consume the remaining IPv4 bound address and port.
 	if _, err := io.ReadFull(conn, make([]byte, 6)); err != nil {
 		t.Fatalf("reading the bound address: %v", err)
 	}
@@ -925,8 +847,6 @@ func TestAnAuthenticatedTunnelOutlivesTheHandshakeDeadline(t *testing.T) {
 		t.Errorf("the tunnel echoed %q, want %q", got, "ping")
 	}
 }
-
-// ------------------------------------------------------- X2, the exit mode
 
 func loadExitCases(t *testing.T) []hostCase {
 	t.Helper()
@@ -946,9 +866,7 @@ func loadExitCases(t *testing.T) []hostCase {
 	return table.Cases
 }
 
-// With an exit node carrying the traffic the rule inverts: the public internet
-// is the point, and what is refused is what would be dialled on the exit node's
-// LAN rather than the user's.
+// Exit mode allows public traffic but not the exit node's private network.
 func TestAllowExitHost(t *testing.T) {
 	for _, c := range loadExitCases(t) {
 		err := allowExitHost(c.Host, prefixes(t, c.Routes))
@@ -965,8 +883,7 @@ func TestAllowExitHost(t *testing.T) {
 	}
 }
 
-// The two rules must differ in exactly the way the design says: exit mode is
-// wider for public destinations and no wider for anything local.
+// Exit mode must widen only public routing.
 func TestTheTwoModesDifferOnlyWhereIntended(t *testing.T) {
 	for _, c := range loadExitCases(t) {
 		exitErr := allowExitHost(c.Host, prefixes(t, c.Routes))
@@ -975,7 +892,6 @@ func TestTheTwoModesDifferOnlyWhereIntended(t *testing.T) {
 			t.Errorf("%q is allowed in the tailnet rule but refused in exit mode (%s)", c.Host, c.Why)
 		}
 	}
-	// And nothing private becomes reachable by turning exit mode on.
 	for _, h := range []string{"127.0.0.1", "10.0.0.5", "192.168.1.1", "169.254.1.1", "fe80::1", "fd00::1", "localhost"} {
 		if err := allowExitHost(h, nil); err == nil {
 			t.Errorf("allowExitHost(%q) = nil; exit mode must not reach a LAN", h)
@@ -983,8 +899,7 @@ func TestTheTwoModesDifferOnlyWhereIntended(t *testing.T) {
 	}
 }
 
-// The mode follows the status while the proxy is running: no restart, and the
-// switch has to take effect on the very next request.
+// Routing mode changes must apply atomically to the next request.
 func TestTheGuardFollowsTheExitMode(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "reached")
@@ -1009,9 +924,7 @@ func TestTheGuardFollowsTheExitMode(t *testing.T) {
 		return resp.StatusCode
 	}
 
-	// Selected but not active is the phase-1 rule: a public host is refused,
-	// rather than dialled straight out of this machine while the browser
-	// believes it is behind the exit node.
+	// Selected but inactive must fail closed rather than dial locally.
 	if p.ExitActive() {
 		t.Fatal("a fresh proxy is already in exit mode")
 	}
@@ -1030,7 +943,6 @@ func TestTheGuardFollowsTheExitMode(t *testing.T) {
 		t.Errorf("a LAN address in exit mode: status %d, want 403", code)
 	}
 
-	// And back again, without a restart.
 	p.SetExitActive(false)
 	if code := get("http://github.com/"); code != http.StatusForbidden {
 		t.Errorf("github.com after the exit node went away: status %d, want 403", code)
@@ -1040,7 +952,6 @@ func TestTheGuardFollowsTheExitMode(t *testing.T) {
 	}
 }
 
-// The SOCKS path reads the same mode, through the dialer guard.
 func TestSOCKSFollowsTheExitMode(t *testing.T) {
 	dialed := make(chan string, 4)
 	p, err := start(func(_ context.Context, _, addr string) (net.Conn, error) {
@@ -1075,8 +986,7 @@ func TestSOCKSFollowsTheExitMode(t *testing.T) {
 	}
 }
 
-// Authentication is unchanged by the mode: exit mode is about where traffic may
-// go, not about who may send it.
+// Exit mode must not weaken authentication.
 func TestExitModeStillNeedsTheToken(t *testing.T) {
 	p, err := start(func(context.Context, string, string) (net.Conn, error) {
 		t.Error("an unauthenticated request reached the dialer in exit mode")

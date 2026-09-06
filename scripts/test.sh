@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Runs everything that can be checked without a browser: the Go host and the
-# extension's node tests.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

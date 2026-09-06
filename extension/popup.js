@@ -1,12 +1,7 @@
-// tailtab popup. Everything shown here is derived from the last status event
-// the background script received: the popup keeps no idea of its own about
-// whether the node is up, which account is active, or where traffic goes.
-
 "use strict";
 
 const api = typeof browser !== "undefined" ? browser : chrome;
-// Only Firefox and Zen have proxy.onRequest, and only they gate proxying on
-// private-browsing access.
+// Gecko alone exposes proxy.onRequest and gates it on private-window access.
 const IS_GECKO =
   typeof browser !== "undefined" &&
   typeof browser.proxy !== "undefined" &&
@@ -16,28 +11,20 @@ const port = api.runtime.connect({ name: "popup" });
 const el = (id) => document.getElementById(id);
 let latest = null;
 let logoutArmed = false;
-// Set when Connect is pressed and cleared once the host answers with a login
-// URL or an error. Asking control for a URL can take a while, and can fail
-// silently when the network is blocked, which made the button look dead.
+// Keep login feedback visible while the control request is in flight.
 let awaitingLogin = false;
-// Set when an account switch or "Add account" was asked for, cleared when the
-// host reports a state that shows it happened.
 let switchingTo = "";
 let menuOpen = false;
 const BUILD = "__TAILTAB_BUILD__";
-// How long a switch may take before the popup stops claiming it is happening.
 const SWITCH_TIMEOUT_MS = 20000;
 let switchTimer = null;
 // The login URL this popup already opened, so a re-render does not open it
 // twice.
 let openedLogin = "";
 const MAX_MACHINES = 8;
-// How many machines to show before anything is typed.
 const PREVIEW_MACHINES = 3;
-// Set by "View all": every machine is listed, scrolling if need be.
 let showAllMachines = false;
 
-// A state the node reports that is worth explaining.
 const HINTS = {
   NeedsLogin: "Log in to connect this browser profile to a tailnet.",
   NeedsMachineAuth: "Approve this device in the tailnet admin console.",
@@ -48,7 +35,6 @@ const HINTS = {
   Disconnected: "The tailtab host is not running.",
 };
 
-// What the state pill says for a state other than Running.
 const LABELS = {
   NeedsLogin: "Not logged in",
   NeedsMachineAuth: "Needs approval",
@@ -61,7 +47,6 @@ const LABELS = {
 port.onMessage.addListener(render);
 port.postMessage({ cmd: "status" });
 
-// runningStateLine says what "Running" actually means right now.
 function runningStateLine(msg, st) {
   if (msg.proxyProblem) return "Connected, not routing";
   if (st.exitNode) {
@@ -72,8 +57,6 @@ function runningStateLine(msg, st) {
   return "Connected";
 }
 
-// pillKind picks the colour: ok when routing works, bad when browsing is
-// blocked, warn for anything half-way, off when nothing is running.
 function pillKind(msg, st, running) {
   if (switchingTo) return "warn";
   if (!running) return st.state === "Starting" ? "warn" : "off";
@@ -86,8 +69,6 @@ function setText(id, text) {
   el(id).textContent = text;
 }
 
-// renderAccount fills the header. The name is the active login profile's; a
-// node that has never completed a login has no profiles yet, and says so.
 function renderAccount(msg, st, running) {
   const accounts = Array.isArray(st.accounts) ? st.accounts : [];
   const active = accounts.find((a) => a.active);
@@ -102,9 +83,7 @@ function renderAccount(msg, st, running) {
   } else if (st.state === "NeedsLogin" || st.authURL) {
     name = "Not logged in";
   } else if (running || st.tailnet) {
-    // The worker has no account list. That happens for a moment on startup,
-    // and permanently when the worker is from an older build (see the build
-    // check in render); either way the tailnet is the honest thing to show.
+    // A fresh or stale worker may lack account data; show only known status.
     name = st.hostname ? st.hostname : "This profile";
     tailnet = st.tailnet || "";
   }
@@ -113,7 +92,6 @@ function renderAccount(msg, st, running) {
   renderAvatar(active);
   el("account").disabled = !msg.connected;
 
-  // The menu: every held account, then "Add account…".
   const menu = el("accountmenu");
   menu.textContent = "";
   for (const account of accounts) {
@@ -147,8 +125,6 @@ function renderAccount(msg, st, running) {
   menu.hidden = !menuOpen;
 }
 
-// accountLabel is what an account is called in the UI: the display name the
-// identity provider gave, falling back to the login name.
 function accountLabel(account) {
   return account.displayName || account.name || "Signed in";
 }
@@ -177,8 +153,7 @@ function renderAvatar(active) {
 function beginSwitch(target) {
   switchingTo = target;
   if (switchTimer) clearTimeout(switchTimer);
-  // A switch the host never confirms must not leave the popup lying about
-  // it; after the deadline the last real status is shown again.
+  // Abandon an unconfirmed switch rather than displaying speculative state.
   switchTimer = setTimeout(() => {
     switchTimer = null;
     if (!switchingTo) return;
@@ -210,14 +185,11 @@ function closeMenu() {
   el("accountmenu").hidden = true;
 }
 
-// renderExitNodes fills the picker from the status and nothing else: the
-// selection shown is always the one the host reported, never what was clicked,
-// so a refused or slow change cannot leave the popup claiming something untrue.
+// Render only host-confirmed selection so slow or rejected changes stay truthful.
 function renderExitNodes(msg, st, running) {
   const row = el("exitrow");
   const select = el("exitnode");
   const nodes = Array.isArray(st.exitNodes) ? st.exitNodes : [];
-  // Most tailnets have no exit node at all, and an empty picker is just noise.
   row.hidden = !running || nodes.length === 0;
   if (row.hidden) return;
 
@@ -230,9 +202,7 @@ function renderExitNodes(msg, st, running) {
     const option = document.createElement("option");
     option.value = node.id;
     option.textContent = node.online ? node.name : node.name + " (offline)";
-    // An offline node stays listed, because it is a real choice the user made
-    // or may want back, but it cannot be newly picked while it cannot carry
-    // traffic.
+    // Keep the selected offline node visible, but prevent selecting a new one.
     option.disabled = !node.online && node.id !== st.exitNode;
     select.appendChild(option);
   }
@@ -240,9 +210,6 @@ function renderExitNodes(msg, st, running) {
   select.disabled = !msg.connected;
 }
 
-// renderMachines lists the tailnet's machines. With nothing typed it shows the
-// first few, online ones first, and says how many more there are; typing
-// filters by name, DNS name or address.
 function renderMachines(st, running) {
   const sec = el("machinesec");
   const peers = Array.isArray(st.peers) ? st.peers : [];
@@ -350,12 +317,10 @@ function render(msg) {
   const running = state === "Running";
 
   let warnings = Array.isArray(st.warnings) ? st.warnings : [];
-  // A login URL means control was reached, so a "you are logged out" warning
-  // left over from the attempt before it (a switch cancels one) is history.
+  // A login URL supersedes the prior attempt's logged-out warning.
   if (st.authURL) warnings = warnings.filter((w) => !/^You are logged out/.test(w));
 
-  // The user asked for a login (Connect while logged out, or Add account) and
-  // the URL has arrived: open it, rather than making them click again.
+  // Open a requested login URL when its asynchronous status arrives.
   if (st.authURL && (awaitingLogin || switchingTo === "new") && !openedLogin) {
     openedLogin = st.authURL;
     awaitingLogin = false;
@@ -365,9 +330,7 @@ function render(msg) {
   if (st.authURL || st.error || running || state === "Starting") {
     awaitingLogin = false;
   }
-  // A switch is over once the host reports either the target account as
-  // active, or a state the new profile would show (NeedsLogin for a fresh
-  // one, Starting/Running for an existing one).
+  // End switching only on host-confirmed account, login state, or error.
   if (switchingTo) {
     const accounts = Array.isArray(st.accounts) ? st.accounts : [];
     const active = accounts.find((a) => a.active);
@@ -384,17 +347,12 @@ function render(msg) {
     }
   }
 
-  // A login URL supersedes the last login error: the error explains a failure
-  // the URL has already moved past, and showing it beside a working Log in
-  // button reads as though the button will not work. It stays in the warnings
-  // list below, so a node that genuinely cannot reach control still says so.
+  // Do not pair a working login URL with its superseded error.
   const errorLine = st.authURL ? "" : st.error;
 
   renderAccount(msg, st, running);
 
-  // "Connected" means the node is up AND the browser is pointed at it. If the
-  // proxy configuration did not take, saying Connected alone would be a lie:
-  // tailnet names are going out over the public internet.
+  // Never report routing when proxy setup failed and names could leak to DNS.
   const pill = el("state");
   pill.textContent = switchingTo
     ? "Switching account…"
@@ -411,8 +369,6 @@ function render(msg) {
         : errorLine || HINTS[state] || ""
   );
 
-  // The reason a login is failing arrives as a health warning, so it is shown
-  // whether or not it also became the hint above.
   const list = el("warnings");
   list.textContent = "";
   const extra = warnings.filter((w) => w !== errorLine).slice(0, 4);
@@ -428,7 +384,7 @@ function render(msg) {
   toggle.setAttribute && toggle.setAttribute("aria-checked", running ? "true" : "false");
   toggle.disabled = !msg.connected || !!switchingTo || (!running && state !== "Stopped" && !st.authURL && state !== "NeedsLogin");
 
-  // While a switch is in flight the old account's details are stale.
+  // Hide stale account details while a switch is in flight.
   el("details").hidden = !running || !!switchingTo;
   if (running) {
     setText("tailnet", st.tailnet || "unknown");
@@ -438,7 +394,6 @@ function render(msg) {
     el("routesrow").hidden = routes.length === 0;
     setText("routes", routes.join(", "));
     el("routes").title = routes.join("\n");
-    // Tailscale's own server is the default and not worth a line.
     const control = String(st.controlURL || "").replace(/\/+$/, "");
     const custom = control && control !== "https://controlplane.tailscale.com";
     el("controlrow").hidden = !custom;
@@ -446,13 +401,10 @@ function render(msg) {
   }
   setText("port", st.proxyPort ? "local proxy 127.0.0.1:" + st.proxyPort : "");
 
-  // A login URL is always offered when there is one, warnings or not.
   el("login").hidden = !st.authURL;
   el("connect").hidden = running || !!st.authURL || !msg.connected;
   el("connect").disabled = awaitingLogin;
   el("connect").textContent = awaitingLogin ? "Requesting…" : "Connect";
-  // The header toggle is the disconnect control; the button stays for
-  // keyboard users but out of the way.
   el("disconnect").hidden = true;
   el("logout").hidden = !msg.connected || (!running && state !== "Stopped");
 
@@ -461,9 +413,7 @@ function render(msg) {
 
   const warning = el("warning");
   if (msg.build !== BUILD) {
-    // The worker answering us is from another build. Chromium keeps the old
-    // worker across browser restarts, so the popup can be new while the
-    // worker still lacks the commands it sends.
+    // Chromium can retain an older worker across browser restarts.
     warning.hidden = false;
     warning.className = "bad";
     warning.textContent = "tailtab was updated. Reload the extension (edge://extensions or about:debugging) to finish.";
@@ -540,15 +490,13 @@ el("search").addEventListener("input", () => {
   if (latest) renderMachines(latest.status || {}, (latest.status || {}).state === "Running");
 });
 
-// Choosing an exit node routes this whole browser profile through it. Nothing
-// is rendered from this event: the picker moves only when the host reports the
-// new selection back.
+// Wait for host status before rendering a new exit-node selection.
 el("exitnode").addEventListener("change", (e) => {
   port.postMessage({ cmd: "exitnode", id: e.target.value || "" });
 });
 
-// Two-step confirmation: a dialog from a popup is unreliable across browsers,
-// and logging out discards the node's credentials.
+// Popup dialogs are unreliable across browsers; use inline confirmation before
+// discarding node credentials.
 el("logout").addEventListener("click", () => {
   if (!logoutArmed) {
     logoutArmed = true;
@@ -563,8 +511,7 @@ el("logout").addEventListener("click", () => {
   port.postMessage({ cmd: "logout" });
 });
 
-// Firefox only routes private-window traffic through proxy.onRequest if the
-// add-on is allowed there, and that is off by default for a temporary add-on.
+// Gecko omits private-window proxy.onRequest events unless access is enabled.
 if (IS_GECKO && api.extension && api.extension.isAllowedIncognitoAccess) {
   Promise.resolve(api.extension.isAllowedIncognitoAccess())
     .then((allowed) => {

@@ -1,17 +1,3 @@
-// Tests for the tailtab extension, run under node:
-//
-//   node extension/test/background.test.js     (or ./scripts/test.sh)
-//
-// background.js is loaded unmodified into a stubbed Chromium MV3 environment —
-// chrome.runtime, chrome.proxy.settings, chrome.storage, and an importScripts
-// that resolves against the real extension directory, so the service-worker
-// path that pulls in rules.js is the one under test. Timers are fake: the
-// reconnect delays are a thing to assert on, not to wait for.
-//
-// This harness began as the verifier's reproduction of B1 and F1 (REVIEW.md);
-// the two throwaway scripts were merged here and turned into assertions so the
-// two defects stay fixed.
-
 "use strict";
 
 const fs = require("fs");
@@ -21,11 +7,8 @@ const vm = require("vm");
 const SRC = path.resolve(__dirname, "..");
 const read = (f) => fs.readFileSync(path.join(SRC, f), "utf8");
 
-// flush lets the background script's promise chains run to completion.
 const flush = () => new Promise((r) => setImmediate(() => setImmediate(() => setImmediate(r))));
 
-// pacTarget pulls the proxy a PAC script would return, so tests can assert on
-// "PROXY 127.0.0.1:64378" rather than on generated JavaScript.
 function pacTarget(value) {
   if (!value || !value.pacScript || typeof value.pacScript.data !== "string") {
     return JSON.stringify(value);
@@ -34,7 +17,6 @@ function pacTarget(value) {
   return m ? m[0] : "pac without a proxy target";
 }
 
-// makeEnv builds a stubbed Chromium and loads background.js into it.
 function makeEnv(options) {
   const opts = options || {};
   const log = { set: [], clear: [], sent: [], sentFull: [], timers: [], connects: 0, localSet: [], sessionSet: [], lastPac: "", alarms: [], icons: [] };
@@ -70,8 +52,7 @@ function makeEnv(options) {
           log.set.push(pacTarget(details.value));
           log.lastPac = (details.value && details.value.pacScript && details.value.pacScript.data) || "";
           if (!cb) return;
-          // Chromium reports a rejected value through runtime.lastError, set
-          // only for the duration of the callback.
+          // Chromium exposes rejection only during this callback.
           if (opts.setError) {
             chrome.runtime.lastError = { message: opts.setError };
             cb();
@@ -111,8 +92,6 @@ function makeEnv(options) {
     console: { log() {}, warn() {}, error() {} },
     crypto: crypto,
     URL: URL,
-    // Recording timers: the delay is the assertion, and the callback is fired
-    // by hand so a reconnect happens exactly when the test says so.
     setTimeout: (fn, ms) => { log.timers.push({ fn: fn, ms: ms }); return log.timers.length; },
     clearTimeout: () => {},
     importScripts: (f) => vm.runInContext(read(f), ctx, { filename: f }),
@@ -125,7 +104,6 @@ function makeEnv(options) {
   return {
     ctx: ctx,
     log: log,
-    // popupMessages holds everything the background pushed to an open popup.
     popupMessages: popupMessages,
     // openPopup connects a popup port, the way clicking the toolbar icon does.
     openPopup() {
@@ -138,31 +116,20 @@ function makeEnv(options) {
       chrome.runtime.onConnect._fire(port);
       return port;
     },
-    // status pushes one status event from the host.
     status(fields) {
       nativePort.onMessage._fire(Object.assign(
         { event: "status", state: "", proxyPort: 0, tailnet: "" },
         fields
       ));
     },
-    // disconnect drops the native port, as a dead host would.
     disconnect() { nativePort.onDisconnect._fire(); },
-    // popup sends a command the way the popup's port does.
-    // popup sends a command the way the popup does: through its port, so the
-    // background's own bookkeeping (who asked for a stop) sees it.
     popup(cmd) {
       const port = this.openPopup();
       port.onMessage._fire(typeof cmd === "string" ? { cmd: cmd } : cmd);
     },
-    // authRequired fires an authentication challenge at the registered
-    // onAuthRequired listener and resolves with what it answered. The answer is
-    // asynchronous by design: a worker woken by the challenge itself waits for
-    // the host rather than declining.
     authRequired(details) {
       return this.authChallenge(details).answer;
     },
-    // authChallenge is the same, but hands back a handle so a test can assert
-    // that a challenge is still parked, unanswered.
     authChallenge(details) {
       if (!log.authListener) throw new Error("no onAuthRequired listener was registered");
       const handle = { settled: false, value: undefined };
@@ -175,19 +142,14 @@ function makeEnv(options) {
       });
       return handle;
     },
-    // runAllTimers fires every pending timer, oldest first, which is how a
-    // waiting challenge reaches its deadline.
     runAllTimers() {
       const pending = log.timers.splice(0, log.timers.length);
       for (const t of pending) t.fn();
       return pending.length;
     },
     authListener: () => log.authListener,
-    // fireAlarm rings a chrome.alarms alarm, as Chromium would on schedule.
     fireAlarm(name) { chrome.alarms.onAlarm._fire({ name: name }); },
-    // setLevelOfControl changes what proxy.settings.get reports from now on.
     setLevelOfControl(v) { log.levelOfControl = v; },
-    // runNextTimer fires the pending reconnect timer and returns its delay.
     runNextTimer() {
       const t = log.timers.shift();
       if (!t) throw new Error("no timer was scheduled");
@@ -197,10 +159,6 @@ function makeEnv(options) {
   };
 }
 
-// makeFirefoxEnv builds a stubbed Zen: an MV3 event page with
-// browser.proxy.onRequest, rules.js already loaded, and no importScripts. It is
-// the other half of the proxy layer, and the only place the SOCKS credential
-// is used.
 function makeFirefoxEnv() {
   const log = { onRequest: null, sent: [], sentFull: [], timers: [], sessionSet: [], localSet: [] };
   const mkEvent = () => {
@@ -247,7 +205,6 @@ function makeFirefoxEnv() {
   sandbox.self = sandbox;
   sandbox.globalThis = sandbox;
   const ctx = vm.createContext(sandbox);
-  // The event page lists rules.js first in background.scripts.
   vm.runInContext(read("rules.js"), ctx, { filename: "rules.js" });
   vm.runInContext(read("background.js"), ctx, { filename: "background.js" });
 
@@ -260,7 +217,6 @@ function makeFirefoxEnv() {
         fields
       ));
     },
-    // resolve asks the split-tunnel listener what to do with a URL.
     resolve(url) {
       if (!log.onRequest) throw new Error("no proxy.onRequest listener was registered");
       return log.onRequest({ url: url });
@@ -285,10 +241,7 @@ function eq(got, want, what) {
   if (g !== w) throw new Error(what + ": got " + g + ", want " + w);
 }
 
-// B1 (REVIEW.md). Disconnect and Connect against one host process leave the
-// port and the tailnet unchanged, so a guard that watches those hands the PAC
-// back on Disconnect and never takes it again — a popup reading Connected over
-// a browser with no PAC at all.
+// Reconnect can reuse both port and tailnet; routing must follow state transitions.
 test("the PAC is reinstalled after a Disconnect and Connect on one host", async () => {
   const env = makeEnv();
   await flush();
@@ -305,7 +258,7 @@ test("the PAC is reinstalled after a Disconnect and Connect on one host", async 
   env.popup("up");
   env.status(Object.assign({}, RUNNING, { state: "Starting" }));
   await flush();
-  env.status(RUNNING); // same process: same port, same tailnet
+  env.status(RUNNING);
   await flush();
   eq(env.log.set, ["PROXY 127.0.0.1:64378", "PROXY 127.0.0.1:64378"], "PAC reinstalled on Connect");
   eq(env.log.sent, ["init", "down", "up"], "commands reaching the host");
@@ -322,7 +275,7 @@ test("a host restart on a new port reinstalls the PAC", async () => {
   eq(env.log.clear, [], "the setting is not handed back on a crash");
   eq(env.log.set[env.log.set.length - 1], "PROXY 0.0.0.1:1", "it is parked on a dead port instead, so nothing leaks");
 
-  env.runNextTimer(); // the reconnect
+  env.runNextTimer();
   env.status({ state: "Running", proxyPort: 2222, tailnet: "tail4d5e6f.ts.net" });
   await flush();
   eq(env.log.set, ["PROXY 127.0.0.1:1111", "PROXY 0.0.0.1:1", "PROXY 127.0.0.1:2222"], "PAC follows the new port, parked in between");
@@ -348,9 +301,7 @@ test("proxy settings owned by policy are left alone", async () => {
   if (!problem) throw new Error("the popup was told nothing about the policy");
 });
 
-// F1 (REVIEW.md). The reset used to run in connect(), which always beat the
-// doubling: connectNative does not throw for a missing host, it reports the
-// failure later on onDisconnect.
+// connectNative reports failure later on onDisconnect, so eager reset defeats backoff.
 test("the reconnect backoff doubles to the 30s cap", async () => {
   const env = makeEnv();
   await flush();
@@ -382,18 +333,14 @@ test("the backoff resets once the host answers", async () => {
   eq(env.runNextTimer(), 1000, "delay after a successful exchange");
 });
 
-// The split-tunnel rules, through the predicate and through the PAC generated
-// from it. The two must agree on every host, since they are one source.
 function rulesContext() {
   const ctx = vm.createContext({});
   vm.runInContext(read("rules.js"), ctx, { filename: "rules.js" });
   return ctx;
 }
 
-// Chromium's `<local>` bypass token means "hostnames without dots", which is
-// exactly the set of MagicDNS short names that must be proxied. It is not used
-// here and must not be reintroduced: the loopback exclusion is by name and
-// address only. This test is the guard on that.
+// Chromium's <local> bypass includes MagicDNS short names, so exclude loopback
+// explicitly instead of using that token.
 test("single-label MagicDNS names are proxied and loopback is not", () => {
   const rules = rulesContext();
   const isTailnet = (h) => rules.tailtabIsTailnetHost(h, "tail4d5e6f.ts.net");
@@ -435,7 +382,6 @@ test("the split-tunnel rules and the generated PAC agree", () => {
     "127.0.0.1", "::1", "192.168.1.1", "100.63.255.255", "100.128.0.1", "fd00::1",
     "evil-ts.net", "notts.net", "ts.net.attacker.com",
     "wiki.tail4d5e6f.ts.net.attacker.com", "100.64.0.1.evil.com", "127.example.com",
-    // Obfuscated forms of 127.0.0.1, which are not MagicDNS names.
     "2130706433", "0x7f000001",
   ];
   for (const host of proxied) {
@@ -448,10 +394,7 @@ test("the split-tunnel rules and the generated PAC agree", () => {
   }
 });
 
-// The live A6 failure: the node was logged out because it could not reach the
-// control plane, and the popup showed a bare NeedsLogin with a Connect button
-// that looked dead. The reason has to reach the popup, and so does an auth URL
-// that only arrives after the popup is already open.
+// Login URLs can arrive after the popup opens and must update that live port.
 test("a login URL that arrives after the popup is open reaches it", async () => {
   const env = makeEnv();
   await flush();
@@ -464,7 +407,6 @@ test("a login URL that arrives after the popup is open reaches it", async () => 
   const before = env.popupMessages[env.popupMessages.length - 1];
   if (before.status.authURL) throw new Error("an auth URL appeared before the host sent one");
 
-  // BrowseToURL lands on the bus seconds later and the host pushes it.
   env.status({ state: "NeedsLogin", proxyPort: 64378, authURL: "https://login.tailscale.com/a/deadbeef" });
   await flush();
   const after = env.popupMessages[env.popupMessages.length - 1];
@@ -511,9 +453,6 @@ test("a popup command reaches the host and the popup is answered", async () => {
   if (env.popupMessages.length <= before) throw new Error("the popup was not answered after its command");
 });
 
-// popup.js renders against a DOM, so it gets a small stub of one. The popup
-// keeps no state of its own: everything below is a function of the last status
-// payload the background pushed.
 function openPopupUI() {
   const els = {};
   const makeEl = () => {
@@ -564,34 +503,25 @@ function openPopupUI() {
   return {
     els: els,
     push(payload) {
-      // A test payload comes from a worker of this build unless it says
-      // otherwise.
       if (payload && payload.build === undefined) payload = Object.assign({ build: "__TAILTAB_BUILD__" }, payload);
       for (const fn of backgroundPort.listeners) fn(payload);
     },
     warningTexts: () => els.warnings.children.map((c) => c.textContent),
-    // What the popup sent back to the background script.
     sent: sent,
-    // Tabs the popup opened.
     opened: opened,
-    // exitOptions describes the picker as the user would see it.
     exitOptions: () => els.exitnode.children.map((c) => ({
       value: c.value, label: c.textContent, disabled: c.disabled,
     })),
-    // chooseExitNode picks an entry, the way changing the select does.
     chooseExitNode(id) {
       els.exitnode.value = id;
       if (!els.exitnode.listeners.change) throw new Error("the picker has no change listener");
       els.exitnode.listeners.change({ target: els.exitnode });
     },
-    // accountItems describes the account menu: one entry per held account,
-    // then the divider and the "Add account" button.
     accountItems: () => els.accountmenu.children.map((c) => ({
       label: c.children.length ? c.children[0].children[0].textContent : c.textContent,
       className: c.className,
       id: c.accountID,
     })),
-    // chooseAccount clicks a menu entry.
     chooseAccount(id) {
       const item = els.accountmenu.children.find((c) => c.accountID === id);
       if (!item) throw new Error("no menu entry for " + id);
@@ -605,7 +535,6 @@ function openPopupUI() {
     clickToggle() {
       els.toggle.listeners.click();
     },
-    // search types into the machine box.
     search(q) {
       els.search.value = q;
       els.search.listeners.input();
@@ -620,10 +549,7 @@ function openPopupUI() {
 
 const LOGIN_ERROR = "You are logged out. The last login error was: all connection attempts failed";
 
-// Architect ruling: an auth URL supersedes the last login error. The error must
-// not sit on the hint line beside a working Log in button, but it must stay
-// visible in the warnings list so a node that genuinely cannot reach control
-// still explains itself.
+// A working auth URL supersedes its prior login error without hiding other warnings.
 test("a login URL supersedes the login error on the hint line", () => {
   const ui = openPopupUI();
   ui.push({
@@ -641,8 +567,6 @@ test("a login URL supersedes the login error on the hint line", () => {
   }
   eq(ui.els.hint.textContent, "Log in to connect this browser profile to a tailnet.", "hint line");
   if (ui.els.login.hidden) throw new Error("the Log in button is hidden while an auth URL exists");
-  // The "logged out" warning is the attempt the URL has already moved past
-  // and is dropped; any other warning is still shown one line down.
   eq(ui.warningTexts(), ["Cannot reach the coordination server"], "warnings list");
   if (ui.els.warnings.hidden) throw new Error("the warnings list is hidden");
 });
@@ -677,10 +601,7 @@ test("a running node shows its details and no warnings", () => {
   eq(ui.els.toggle.className, "on", "the header toggle is on while Running");
 });
 
-// The split-tunnel rule exists twice: here, and as allowTailnetHost in
-// internal/proxy. testdata/tailnet-hosts.json is the table both are tested
-// against, so the pair cannot drift into the failure R1 describes — the
-// extension proxying a host the listener then answers 403 to.
+// Shared cases keep extension routing in parser parity with allowTailnetHost.
 test("rules.js matches the shared host table", () => {
   const table = JSON.parse(fs.readFileSync(path.resolve(SRC, "..", "testdata", "tailnet-hosts.json"), "utf8"));
   const rules = require(path.join(SRC, "rules.js"));
@@ -698,8 +619,7 @@ test("rules.js matches the shared host table", () => {
   if (wrong.length) throw new Error(wrong.length + " host(s) disagree:\n     " + wrong.join("\n     "));
 });
 
-// R1 in the browser: a tailnet on a custom domain has to reach the PAC too,
-// and only once the node has reported that suffix.
+// A custom MagicDNS suffix is trusted only after the host reports it.
 test("the PAC routes a custom MagicDNS domain once the suffix is known", () => {
   const rules = require(path.join(SRC, "rules.js"));
   const pac = rules.tailtabBuildPac(64378, "my-tailnet.example.com");
@@ -710,25 +630,20 @@ test("the PAC routes a custom MagicDNS domain once the suffix is known", () => {
   if (proxied.indexOf("127.0.0.1:64378") === -1) {
     throw new Error("the custom domain was routed to " + proxied);
   }
-  // No fallback: a tailnet name must fail rather than leak onto the internet.
+  // Tailnet failures must not fall back to public DNS.
   if (proxied.indexOf("DIRECT") !== -1) throw new Error("the PAC offers a DIRECT fallback: " + proxied);
 
   eq(decide("https://github.com/", "github.com"), "DIRECT", "the public internet");
-  // Unknown suffix, same host: DIRECT, because nothing says it is ours.
   const blind = rules.tailtabBuildPac(64378, "");
   const decideBlind = new Function("url", "host", blind + "\nreturn FindProxyForURL(url, host);");
   eq(decideBlind("http://host.my-tailnet.example.com/", "host.my-tailnet.example.com"), "DIRECT",
     "a custom domain before the suffix is known");
 });
 
-// ------------------------------------------------------------- H2, the token
-
 const TOKEN = "tok-AAAA1111";
 const RUNNING_AUTH = Object.assign({}, RUNNING, { proxyToken: TOKEN });
 
-// Chromium reaches the proxy over HTTP because it cannot authenticate SOCKS5,
-// so the PAC has to say PROXY. A SOCKS5 PAC would produce a proxy the browser
-// can never authenticate to.
+// Chromium cannot authenticate SOCKS5, so its PAC must use HTTP PROXY.
 test("the PAC sends tailnet hosts to PROXY, not SOCKS5", async () => {
   const env = makeEnv();
   await flush();
@@ -744,8 +659,7 @@ test("the PAC sends tailnet hosts to PROXY, not SOCKS5", async () => {
   }
 });
 
-// G11. onAuthRequired fires for every 401 and 407 in the browser. An unscoped
-// answer would hand the tailnet credential to any site or proxy that asked.
+// onAuthRequired sees every 401 and 407; never expose the token outside our port.
 test("the proxy challenge is answered only for our own listener", async () => {
   const env = makeEnv();
   await flush();
@@ -768,22 +682,16 @@ test("the proxy challenge is answered only for our own listener", async () => {
     eq(await env.authRequired(details), {}, "answer to " + what);
   }
 
-  // Registered at the top level, for every URL, and asynchronously — the three
-  // things Chromium requires of a proxy-auth provider.
+  // Chromium proxy authentication requires top-level async registration.
   const reg = env.authListener();
   eq(reg.extra, ["asyncBlocking"], "extraInfoSpec");
   eq(reg.filter, { urls: ["<all_urls>"] }, "url filter");
 });
 
-// Found in live Edge: a service worker that Chromium wakes *with* this event
-// has no port and no token until the host answers its init. Declining in that
-// window is what puts a proxy-password dialog, and then the proxy's own 407
-// page, in front of a browser that is configured correctly and simply has not
-// caught up.
+// A proxy challenge can wake an empty worker before the host returns its token.
 test("a challenge that arrives before the host has answered waits for it", async () => {
   const env = makeEnv();
   await flush();
-  // No status at all yet, exactly as a freshly started worker.
   const challenge = env.authChallenge({ isProxy: true, challenger: { host: "127.0.0.1", port: 64378 } });
   await flush();
   if (challenge.settled) {
@@ -799,20 +707,19 @@ test("a challenge that arrives before the host has answered waits for it", async
 test("a challenge the host never answers is declined at the deadline", async () => {
   const env = makeEnv();
   await flush();
-  env.status(RUNNING); // Running, but no token in this event
+  env.status(RUNNING);
   await flush();
   const challenge = env.authChallenge({ isProxy: true, challenger: { host: "127.0.0.1", port: 64378 } });
   await flush();
   if (challenge.settled) throw new Error("declined without waiting");
-  env.runAllTimers(); // the deadline passes
+  env.runAllTimers();
   eq(await challenge.answer, {}, "the answer when the host never came");
 });
 
-// Waiting is only ever for our own proxy. Somebody else's must be answered at
-// once, or every other proxy in the browser stalls for eight seconds.
+// Do not stall unrelated browser authentication while waiting for our host.
 test("a challenge from another proxy is declined without waiting", async () => {
   const env = makeEnv();
-  await flush(); // no token yet, which is when the waiting path is live
+  await flush();
   const foreign = env.authChallenge({ isProxy: true, challenger: { host: "10.0.0.9", port: 3128 } });
   await flush();
   if (!foreign.settled) throw new Error("a foreign proxy challenge was parked waiting for our host");
@@ -824,10 +731,7 @@ test("a challenge from another proxy is declined without waiting", async () => {
   eq(site.value, {}, "the answer");
 });
 
-// The other half of the live failure: the browser keeps a PAC across an
-// extension reload, so it can be pointed at a port from a host process that is
-// already gone. Rewriting the settings turns a permanently broken profile into
-// one that fixes itself on the next request.
+// Chromium can retain a PAC for a dead host across extension reloads.
 test("a challenge from a port we no longer use reinstalls the proxy settings", async () => {
   const env = makeEnv();
   await flush();
@@ -841,8 +745,7 @@ test("a challenge from a port we no longer use reinstalls the proxy settings", a
   eq(env.log.set.length, before + 1, "the proxy settings were reinstalled");
   eq(env.log.set[env.log.set.length - 1], "PROXY 127.0.0.1:64378", "and they point at the live proxy");
 
-  // Somebody else's proxy on loopback gets a plain decline, so its own login
-  // still works.
+  // Decline rather than cancel another loopback proxy's authentication.
   eq(await env.authRequired({ isProxy: true, realm: "squid", challenger: { host: "127.0.0.1", port: 3128 } }), {},
     "a challenge from another local proxy is declined, not cancelled");
 });
@@ -857,20 +760,18 @@ test("a host restart rotates both the port and the token", async () => {
 
   env.disconnect();
   await flush();
-  env.runNextTimer(); // the reconnect
+  env.runNextTimer();
   env.status({ state: "Running", proxyPort: 2222, tailnet: "tail4d5e6f.ts.net", proxyToken: "second-token" });
   await flush();
 
   eq(env.log.set, ["PROXY 127.0.0.1:1111", "PROXY 0.0.0.1:1", "PROXY 127.0.0.1:2222"], "the PAC follows the new port, parked in between");
   eq(await env.authRequired({ isProxy: true, challenger: { host: "127.0.0.1", port: 2222 } }),
     { authCredentials: { username: "tailtab", password: "second-token" } }, "the new token");
-  // The old port is not ours any more.
   eq(await env.authRequired({ isProxy: true, challenger: { host: "127.0.0.1", port: 1111 } }), {},
     "a challenge from the dead port");
 });
 
-// FIX 1 (REVIEW.md). The token is written nowhere at all: a saved one is stale
-// by construction, because the host dies with the worker that started it.
+// The per-process token must never leave worker memory.
 test("the token is never stored or pushed anywhere", async () => {
   const env = makeEnv();
   await flush();
@@ -887,8 +788,7 @@ test("the token is never stored or pushed anywhere", async () => {
   if (port.name !== "popup") throw new Error("the popup port was not opened");
 });
 
-// A token left over in storage.session from an older build must not be picked
-// up: the host that would honour it is long gone.
+// A persisted token is stale because its host process is gone.
 test("a token left in storage.session is not restored", async () => {
   const env = makeEnv({
     session: { proxyToken: "tok-STALE", status: { state: "Running", proxyPort: 64378, tailnet: "tail4d5e6f.ts.net" } },
@@ -896,12 +796,11 @@ test("a token left in storage.session is not restored", async () => {
   await flush();
   const challenge = env.authChallenge({ isProxy: true, challenger: { host: "127.0.0.1", port: 64378 } });
   await flush();
-  env.runAllTimers(); // the host never answers in this test
+  env.runAllTimers();
   eq(await challenge.answer, {}, "a challenge answered from storage");
 });
 
-// When the host dies the credential goes with it. Whatever takes the port next
-// is not our proxy, and must not be handed the token.
+// Drop credentials with their host so a port successor cannot receive them.
 test("the token is dropped when the host disconnects", async () => {
   const env = makeEnv();
   await flush();
@@ -914,8 +813,7 @@ test("the token is dropped when the host disconnects", async () => {
   env.disconnect();
   await flush();
   eq(vm.runInContext("proxyToken", env.ctx), "", "the token in memory");
-  // A challenge now waits for the replacement host rather than declining, and
-  // the replacement's token is the one that answers it.
+  // A concurrent challenge must wait for the replacement host's token.
   const challenge = env.authChallenge(ours);
   await flush();
   if (challenge.settled) throw new Error("declined instead of waiting for the replacement host");
@@ -925,7 +823,7 @@ test("the token is dropped when the host disconnects", async () => {
     "the replacement host's token");
 });
 
-// Zen authenticates SOCKS5 in-protocol, which Chromium cannot do at all.
+// Gecko supplies SOCKS5 credentials in proxy.onRequest; Chromium cannot.
 test("Firefox sends the credential with the SOCKS proxy info", async () => {
   const env = makeFirefoxEnv();
   await flush();
@@ -937,7 +835,6 @@ test("Firefox sends the credential with the SOCKS proxy info", async () => {
     "a tailnet host");
   eq(env.resolve("https://github.com/"), { type: "direct" }, "the public internet");
 
-  // No PAC and no proxy settings are touched on this side.
   if (env.log.localSet.some((v) => JSON.stringify(v).indexOf(TOKEN) !== -1)) {
     throw new Error("the token was written to storage.local");
   }
@@ -948,19 +845,12 @@ test("Firefox still proxies a tailnet host before the token arrives", async () =
   await flush();
   env.status({ state: "Running", proxyPort: 64378, tailnet: "tail4d5e6f.ts.net" });
   await flush();
-  // Without credentials the request fails at the proxy, which is the right
-  // failure: sending it DIRECT would leak a tailnet name to the public DNS.
+  // Without credentials, fail at the proxy rather than leak to public DNS.
   eq(env.resolve("http://wiki/"),
     { type: "socks", host: "127.0.0.1", port: 64378, proxyDNS: true }, "a tailnet host with no token");
 });
 
-// ------------------------------------------------------ the PAC must be ASCII
-
-// Found in live A3: Edge logged "'pacScript.data' supports only ASCII code
-// (encode URLs in Punycode format)" and dropped the whole script, leaving the
-// browser with no proxy configuration while the popup said Connected. The
-// source of tailtabIsTailnetHost is embedded in the PAC, comments and all, so
-// one em dash in one of its comments was enough.
+// Chromium rejects the whole PAC if stringified source includes non-ASCII.
 test("the generated PAC is pure ASCII", () => {
   const rules = rulesContext();
   const pac = rules.tailtabBuildPac(64378, "tail4d5e6f.ts.net");
@@ -970,8 +860,7 @@ test("the generated PAC is pure ASCII", () => {
   }
   if (bad.length) throw new Error("the PAC has non-ASCII characters Chromium would reject: " + bad.join(", "));
 
-  // The whole file, not just the part that is embedded today: a comment moved
-  // into the embedded function later would otherwise break Edge silently.
+  // Guard code that may later move into a stringified function too.
   const src = read("rules.js");
   for (let i = 0; i < src.length; i++) {
     if (src.charCodeAt(i) > 127) {
@@ -982,7 +871,6 @@ test("the generated PAC is pure ASCII", () => {
 });
 
 test("a non-ASCII character in the embedded function is refused, not shipped", () => {
-  // The same file with one em dash put back into tailtabIsTailnetHost.
   const broken = read("rules.js").replace("// Never proxy the loopback", "// Never proxy the loopback \u2014 it is ours");
   const ctx = vm.createContext({});
   vm.runInContext(broken, ctx, { filename: "rules-broken.js" });
@@ -1001,7 +889,6 @@ test("a non-ASCII character in the embedded function is refused, not shipped", (
 test("a PAC that cannot be built is reported instead of installed", async () => {
   const env = makeEnv();
   await flush();
-  // Make the build fail the way a stray non-ASCII comment would.
   vm.runInContext("tailtabBuildPac = function () { throw new Error('non-ASCII character'); };", env.ctx);
   env.status(RUNNING_AUTH);
   await flush();
@@ -1013,9 +900,7 @@ test("a PAC that cannot be built is reported instead of installed", async () => 
   }
 });
 
-// The browser can reject the proxy configuration after accepting the call. It
-// says so through runtime.lastError inside the callback and nowhere else, so an
-// unread lastError is a browser with no proxy and a popup saying Connected.
+// Proxy rejection appears only as callback-scoped runtime.lastError.
 test("a rejected proxy configuration is reported, not swallowed", async () => {
   const env = makeEnv({ setError: "\'pacScript.data\' supports only ASCII code (encode URLs in Punycode format)." });
   await flush();
@@ -1027,7 +912,6 @@ test("a rejected proxy configuration is reported, not swallowed", async () => {
   if (problem.indexOf("not routed") === -1 || problem.indexOf("ASCII") === -1) {
     throw new Error("the reason was lost: " + JSON.stringify(problem));
   }
-  // And the popup was told, in the same slot as a levelOfControl problem.
   const port = env.openPopup();
   const last = env.popupMessages[env.popupMessages.length - 1];
   if (!last || last.proxyProblem !== problem) {
@@ -1043,7 +927,6 @@ test("a proxy configuration that takes clears an earlier problem", async () => {
   await flush();
   if (!vm.runInContext("proxyProblem", env.ctx)) throw new Error("the policy problem was not recorded");
 
-  // The policy is lifted and the next attempt succeeds.
   vm.runInContext("proxyProblem", env.ctx);
   env.setLevelOfControl("controllable_by_this_extension");
   env.status(Object.assign({}, RUNNING_AUTH, { proxyPort: 64379 }));
@@ -1052,8 +935,7 @@ test("a proxy configuration that takes clears an earlier problem", async () => {
   eq(env.log.set, ["PROXY 127.0.0.1:64379"], "the PAC that was installed");
 });
 
-// The popup must not say the browser is routing through the tailnet when it is
-// not: with no proxy configuration, tailnet names go out over the internet.
+// Failed proxy setup must not report routing while names can leak to DNS.
 test("the popup does not claim to be routing when the proxy did not take", () => {
   const ui = openPopupUI();
   ui.push({
@@ -1067,8 +949,6 @@ test("the popup does not claim to be routing when the proxy did not take", () =>
     throw new Error("the warning does not say routing is broken: " + ui.els.warning.textContent);
   }
 });
-
-// ------------------------------------------------------------- X3, exit mode
 
 const EXIT_NODES = [
   { id: "nodeid-attic", name: "attic", online: false, os: "linux" },
@@ -1107,8 +987,7 @@ test("the exit-mode PAC proxies the internet and leaves the LAN alone", () => {
   for (const host of ["localhost", "127.0.0.1", "192.168.1.1", "10.0.0.5", "169.254.1.1", "fe80::1"]) {
     eq(decide("http://" + host + "/", host), "DIRECT", host);
   }
-  // Still no fallback: a request that cannot reach the proxy must fail rather
-  // than leave through this machine, which is the whole point of exit mode.
+  // Exit-mode proxy failures must not fall back to the local connection.
   if (pac.indexOf("DIRECT\";") === -1) throw new Error("the PAC lost its DIRECT branch entirely");
   if (pac.indexOf("PROXY 127.0.0.1:64378; DIRECT") !== -1) throw new Error("the PAC offers a DIRECT fallback");
   for (let i = 0; i < pac.length; i++) {
@@ -1138,9 +1017,7 @@ test("choosing an exit node switches the PAC and clearing it switches back", asy
   eq(pacRule(), "tailnet", "the rule after clearing the exit node");
 });
 
-// G15. An exit node that goes offline must not send this profile's browsing
-// back out over the local connection: the browser keeps sending everything to
-// the proxy, and the host refuses it, so browsing stops instead of leaking.
+// An offline exit node must block browsing instead of leaking it locally.
 test("an exit node going offline keeps the browser in exit mode", async () => {
   const env = makeEnv();
   await flush();
@@ -1150,14 +1027,10 @@ test("an exit node going offline keeps the browser in exit mode", async () => {
 
   env.status(Object.assign({}, EXIT_RUNNING, { exitNodeActive: false }));
   await flush();
-  // The routing decision, not the last script installed: if this flipped, the
-  // next PAC written would send everything DIRECT again.
   eq(vm.runInContext("exitMode()", env.ctx), true, "still in exit mode with the node offline");
   eq(env.log.lastPac.indexOf("tailtabExitModeProxies") !== -1, true, "the installed PAC is still the exit-mode one");
   eq(env.log.set.length, before, "the PAC was needlessly rewritten");
 
-  // And a PAC written while the node is offline still routes everything to the
-  // proxy, where the host refuses it. Blocked, not leaked.
   env.status(Object.assign({}, EXIT_RUNNING, { exitNodeActive: false, proxyPort: 9999 }));
   await flush();
   if (env.log.lastPac.indexOf("tailtabExitModeProxies") === -1) {
@@ -1165,8 +1038,6 @@ test("an exit node going offline keeps the browser in exit mode", async () => {
   }
 });
 
-// The same on the Firefox side, where there is no PAC to inspect: the listener
-// answers per request, so the decision is visible directly.
 test("Firefox keeps sending everything to the proxy when the exit node is offline", async () => {
   const env = makeFirefoxEnv();
   await flush();
@@ -1188,8 +1059,7 @@ test("a host restart re-derives exit mode from the new status", async () => {
   await flush();
   eq(env.log.set[env.log.set.length - 1], "PROXY 0.0.0.1:1", "the PAC is parked when the host dies");
 
-  env.runNextTimer(); // the reconnect
-  // The replacement host reports the same selection, on a new port.
+  env.runNextTimer();
   env.status(Object.assign({}, EXIT_RUNNING, { proxyPort: 2222, proxyToken: "tok-BBBB2222" }));
   await flush();
   eq(env.log.set, ["PROXY 127.0.0.1:1111", "PROXY 0.0.0.1:1", "PROXY 127.0.0.1:2222"], "the PAC follows the new port, parked in between");
@@ -1210,7 +1080,6 @@ test("Firefox routes through the exit node too", async () => {
   eq(env.resolve("http://192.168.1.1/"), { type: "direct" }, "the LAN in exit mode");
   eq(env.resolve("http://127.0.0.1:9000/"), { type: "direct" }, "loopback in exit mode");
 
-  // Cleared again: back to the split tunnel.
   env.status(Object.assign({}, EXIT_RUNNING, { exitNode: "", exitNodeActive: false }));
   await flush();
   eq(env.resolve("https://github.com/"), { type: "direct" }, "the public internet with no exit node");
@@ -1227,8 +1096,6 @@ test("the exit-node command carries the id to the host", async () => {
   port.onMessage._fire({ cmd: "exitnode" });
   eq(env.log.sentFull[env.log.sentFull.length - 1], { cmd: "exitnode", id: "" }, "clearing the selection");
 });
-
-// ---------------------------------------------------------- the popup picker
 
 test("the popup lists the exit nodes and says which one carries the traffic", () => {
   const ui = openPopupUI();
@@ -1278,16 +1145,11 @@ test("picking an exit node asks the host and waits for it", () => {
   });
   ui.chooseExitNode("nodeid-server");
   eq(ui.sent[ui.sent.length - 1], { cmd: "exitnode", id: "nodeid-server" }, "the command sent");
-  // Nothing changes in the popup until the host says it did.
+  // Keep the displayed selection host-authoritative while the change is pending.
   eq(ui.els.state.textContent, "Connected", "the state line before the host answers");
 });
 
-// Found in live Edge: Chromium keeps an extension's proxy setting across a
-// service-worker restart and an extension reload, but the host process does
-// not survive either. The user ended up with the old host still answering 407
-// on the old port, a new worker holding the token for a new port, and a proxy
-// password dialog. A starting worker owns no live proxy, so whatever setting
-// it finds is from an earlier life and goes.
+// Chromium retains PAC across worker reloads, but the native host does not survive.
 test("a PAC left by an earlier worker is parked at startup, not cleared", async () => {
   const env = makeEnv({ levelOfControl: "controlled_by_this_extension" });
   await flush();
@@ -1301,7 +1163,7 @@ test("a PAC left by an earlier worker is parked at startup, not cleared", async 
 });
 
 test("a setting nobody left behind is not touched at startup", async () => {
-  const env = makeEnv(); // controllable_by_this_extension: no PAC of ours installed
+  const env = makeEnv();
   await flush();
   eq(env.log.clear, [], "nothing to drop");
   const policy = makeEnv({ levelOfControl: "controlled_by_policy" });
@@ -1309,8 +1171,7 @@ test("a setting nobody left behind is not touched at startup", async () => {
   eq(policy.log.clear, [], "a policy setting is not ours to drop");
 });
 
-// A reconnect is a setTimeout, and a sleeping service worker loses its timers.
-// The alarm is the one thing Chromium promises to wake the worker for.
+// MV3 sleep drops reconnect timers, while alarms can wake the worker.
 test("the heartbeat alarm reconnects a dead host", async () => {
   const env = makeEnv();
   await flush();
@@ -1331,10 +1192,6 @@ test("the heartbeat alarm reconnects a dead host", async () => {
   eq(env.log.connects, before + 1, "another extension's alarm name is ignored");
 });
 
-
-// The header is the account switcher: the active profile's name and tailnet,
-// a menu of every held account, and "Add account". Nothing in it is guessed
-// from a click; the active account is whatever the host last reported.
 test("the account switcher lists held accounts and switches on click", () => {
   const ui = openPopupUI();
   ui.push({
@@ -1356,7 +1213,6 @@ test("the account switcher lists held accounts and switches on click", () => {
   eq(ui.sent[ui.sent.length - 1], { cmd: "switch", id: "p2" }, "the switch command");
   eq(ui.els.state.textContent, "Switching account…", "the pill while the host works");
 
-  // The host reports the other account active: the switch is over.
   ui.push({
     connected: true,
     status: Object.assign({ warnings: [] }, EXIT_RUNNING, {
@@ -1458,7 +1314,6 @@ test("more machines than the preview shows are counted, not listed", () => {
   eq(rows[3].name, "18 more · type to filter", "the count line");
   eq(rows.slice(0, 3).every((r) => r.className === "name"), true, "online machines come first");
 
-  // "View all" lists everything, and "Show fewer" folds it back.
   ui.els.machines.children[3].children[1].listeners.click();
   const all = ui.machineRows();
   eq(all.length, 22, "21 machines and the fold line");
@@ -1486,14 +1341,12 @@ test("a worker from another build is reported instead of silently ignored", () =
   eq(ui.els.warning.hidden, false, "the banner is shown");
   if (!/Reload the extension/.test(ui.els.warning.textContent)) throw new Error("banner text: " + ui.els.warning.textContent);
   eq(ui.els.accountname.textContent, "mac-tailtab-edge", "the header does not pretend to know the account");
-  // An old worker sends no build at all: same treatment.
+  // Missing build metadata also identifies a stale worker.
   const ui2 = openPopupUI();
   ui2.push({ connected: true, build: null, status: { state: "Running", tailnet: "t.ts.net", proxyPort: 1, warnings: [] } });
   eq(ui2.els.warning.hidden, false, "a worker with no build id is treated as old");
 });
 
-// The toolbar icon's tail dot is the one thing visible without opening the
-// popup, so it follows the same truth the popup tells.
 test("the toolbar icon follows the routing state", async () => {
   const env = makeEnv();
   await flush();
@@ -1519,8 +1372,6 @@ test("the toolbar icon follows the routing state", async () => {
   eq(env.log.icons.length, before, "an unchanged state does not set the icon again");
 });
 
-// Subnet routes: an address behind a subnet router is a tailnet destination,
-// in the split tunnel and in exit mode alike, and the PAC carries the list.
 test("routed subnets are proxied, in both modes, and the PAC knows them", () => {
   const rules = require(path.join(SRC, "rules.js"));
   const routes = ["192.168.1.0/24", "fd00:1:2::/64"];
@@ -1547,7 +1398,7 @@ test("routed subnets are proxied, in both modes, and the PAC knows them", () => 
   const exit = vm.runInNewContext(rules.tailtabBuildPac(64378, "", true, routes) + "\nFindProxyForURL", {});
   eq(exit("http://192.168.1.10/", "192.168.1.10"), "PROXY 127.0.0.1:64378", "routed LAN still via the tailnet in exit mode");
   eq(exit("http://192.168.2.10/", "192.168.2.10"), "DIRECT", "unrouted LAN stays local in exit mode");
-  // A junk route in the status never reaches the script.
+  // Malformed routes must not enter generated PAC source.
   const dirty = rules.tailtabBuildPac(64378, "", false, ["192.168.1.0/24", "evil\"); alert(1); //"]);
   if (dirty.indexOf("alert") !== -1) throw new Error("an unvalidated route reached the PAC");
 });
@@ -1585,8 +1436,6 @@ test("the popup lists subnet routes when there are any", () => {
   eq(ui.els.routesrow.hidden, true, "row hidden without routes");
 });
 
-// A custom coordination server (Headscale) travels with the first login and
-// with every Add account, and never anywhere else.
 test("the control server from settings goes to the host on init and add account", async () => {
   const env = makeEnv({ local: { controlURL: "https://headscale.example.com" } });
   await flush();
@@ -1594,7 +1443,6 @@ test("the control server from settings goes to the host on init and add account"
   eq(init.controlURL, "https://headscale.example.com", "init carries it");
   env.status(RUNNING);
   await flush();
-  // Through the popup's port, which is where the settings value is re-read.
   const popup = env.openPopup();
   popup.onMessage._fire({ cmd: "addaccount" });
   await flush();
@@ -1661,7 +1509,6 @@ test("a logout the user asked for hands the setting back; a switch that lands on
   await flush();
   env.status(RUNNING);
   await flush();
-  // An account switch: nobody asked to stop, the target just needs a login.
   const popup = env.openPopup();
   popup.onMessage._fire({ cmd: "switch", id: "p2" });
   env.status({ state: "NeedsLogin" });
@@ -1691,8 +1538,6 @@ test("the rules snapshot in storage.local feeds the startup park after a browser
   const snap = first.log.localSet.filter((v) => v.rules).pop();
   eq(snap.rules, { tailnet: "corp.example.com", subnetRoutes: ["10.42.0.0/16"], exitNode: "" }, "the snapshot holds the routing facts and nothing else");
 
-  // A browser restart: no session storage, a stale setting of ours, the
-  // local snapshot available.
   const env = makeEnv({ levelOfControl: "controlled_by_this_extension", local: { rules: snap.rules } });
   await flush();
   const find = vm.runInNewContext(env.log.lastPac + "\nFindProxyForURL", {});

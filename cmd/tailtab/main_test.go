@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// Argument lists browsers actually hand a native-messaging host. None of them
-// is a subcommand, and every one of them must land in host mode.
 var browserArgs = map[string][]string{
 	"no arguments": {},
 	"firefox and zen": {
@@ -49,10 +47,6 @@ func TestModeSelection(t *testing.T) {
 	}
 }
 
-// TestBrowserArgvEntersHostMode runs the real binary the way a browser does.
-// This is the end-to-end form of the bug: the host printed usage and exited 2
-// the moment Zen launched it, which the extension saw as a host that would not
-// stay up.
 func TestBrowserArgvEntersHostMode(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds a binary")
@@ -68,8 +62,6 @@ func TestBrowserArgvEntersHostMode(t *testing.T) {
 
 	for name, args := range browserArgs {
 		t.Run(name, func(t *testing.T) {
-			// One framed status command, then EOF. A status before init needs
-			// no node and touches no network.
 			body := []byte(`{"cmd":"status"}`)
 			var stdin bytes.Buffer
 			var hdr [4]byte
@@ -97,7 +89,6 @@ func TestBrowserArgvEntersHostMode(t *testing.T) {
 				t.Fatal("the host did not exit when stdin closed")
 			}
 
-			// Host mode answered on the wire, so it did not print usage and quit.
 			out := stdout.Bytes()
 			if len(out) < 4 {
 				t.Fatalf("no framed reply on stdout; stderr:\n%s", stderr.String())

@@ -11,8 +11,6 @@ import (
 )
 
 func TestRoundTrip(t *testing.T) {
-	// Write an Event, then read the same bytes back as a Request: the framing
-	// is identical in both directions, so one buffer exercises both halves.
 	var buf bytes.Buffer
 	out := NewCodec(nil, &buf)
 	if err := out.Write(&Event{Event: "status", State: "Running", Tailnet: "tail4d5e6f.ts.net", ProxyPort: 51234}); err != nil {
@@ -41,7 +39,6 @@ func TestRoundTrip(t *testing.T) {
 }
 
 func TestReadSequence(t *testing.T) {
-	// Several messages back to back must all decode from one stream.
 	var in bytes.Buffer
 	in.Write(frame(t, `{"cmd":"status"}`))
 	in.Write(frame(t, `{"cmd":"up"}`))
@@ -85,8 +82,7 @@ func TestWriteRejectsOversize(t *testing.T) {
 }
 
 func TestReadBadJSONIsRecoverable(t *testing.T) {
-	// A framed-but-invalid body must not desync the stream: the next message
-	// still reads. This is what keeps the host alive on a malformed command.
+	// Invalid JSON must not desynchronize the next frame.
 	var in bytes.Buffer
 	in.Write(frame(t, `{"cmd":`))
 	in.Write(frame(t, `{"cmd":"status"}`))
@@ -111,7 +107,7 @@ func TestReadTruncatedBody(t *testing.T) {
 	var hdr [4]byte
 	binary.LittleEndian.PutUint32(hdr[:], 64)
 	in.Write(hdr[:])
-	in.WriteString(`{"cmd":"status"}`) // fewer than 64 bytes
+	in.WriteString(`{"cmd":"status"}`)
 	if _, err := NewCodec(&in, nil).Read(); err == nil {
 		t.Fatal("Read accepted a truncated body")
 	}
@@ -130,13 +126,13 @@ func TestValidProfileID(t *testing.T) {
 	}
 	bad := []string{
 		"",
-		"0F8FAD5B-D9CB-469F-A165-70867728950E",   // uppercase
-		"0f8fad5b-d9cb-469f-a165-70867728950",    // too short
-		"0f8fad5bd9cb469fa16570867728950e",       // no hyphens
-		"../../../etc/passwd",                    // traversal
-		"0f8fad5b-d9cb-469f-a165-70867728950e/x", // trailing path
+		"0F8FAD5B-D9CB-469F-A165-70867728950E",
+		"0f8fad5b-d9cb-469f-a165-70867728950",
+		"0f8fad5bd9cb469fa16570867728950e",
+		"../../../etc/passwd",
+		"0f8fad5b-d9cb-469f-a165-70867728950e/x",
 		"0f8fad5b-d9cb-469f-a165-70867728950e\n",
-		"0f8fad5b-d9cb-469g-a165-70867728950e", // non-hex digit
+		"0f8fad5b-d9cb-469g-a165-70867728950e",
 	}
 	for _, id := range bad {
 		if ValidProfileID(id) {
@@ -145,7 +141,6 @@ func TestValidProfileID(t *testing.T) {
 	}
 }
 
-// frame wraps body in the 4-byte little-endian length prefix.
 func frame(t *testing.T, body string) []byte {
 	t.Helper()
 	var b bytes.Buffer

@@ -29,8 +29,7 @@
           --bad: #e0523a;
         }
       }
-      /* Any author-origin display rule would otherwise beat the user agent's
-         [hidden]; one rule covers every element the popup hides. */
+      /* Author display rules otherwise override the user agent's [hidden]. */
       [hidden] { display: none !important; }
       * { box-sizing: border-box; }
       body {
@@ -45,12 +44,9 @@
       .sec { padding: 12px 14px; border-bottom: 1px solid var(--line); }
       .sec:last-child { border-bottom: 0; }
 
-      /* header: account switcher + toggle */
       .hdr { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); position: relative; }
       #avatar { width: 32px; height: 32px; border-radius: 50%; flex: none; overflow: hidden; background: linear-gradient(135deg, #7c8296 0%, #595f72 60%, #3f4455 100%); color: #fff; font-weight: 600; font-size: 13px; display: flex; align-items: center; justify-content: center; }
       #avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
-      /* The account control reads as a select: boxed, full width, chevron at
-         the right edge, sized for a finger rather than a caret. */
       #account { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); }
       #account:hover { border-color: var(--muted); }
       #account .who { min-width: 0; flex: 1; }
@@ -70,7 +66,6 @@
       #accountmenu .div { height: 1px; background: var(--line); margin: 6px 4px; }
       #accountmenu .add { color: var(--accent); padding: 10px 12px; width: 100%; font-size: 14px; }
 
-      /* state pill */
       .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; font-size: 12px; font-weight: 500; max-width: 100%; }
       .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
       .pill.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
@@ -84,16 +79,13 @@
       .btn { font-size: 13px; padding: 7px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); }
       .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 
-      /* rows */
       .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 5px 0; }
       .row .k { color: var(--muted); font-size: 12.5px; flex: none; }
       .row .v { font-family: var(--mono); font-size: 12.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       button.v.copy::after { content: " ⧉"; color: var(--muted); }
-      /* The native select arrow sits hard against the edge; draw our own
-         chevron so it can breathe, matching the account control's. */
+      /* Replace the cramped native arrow with an inset chevron. */
       select { font: inherit; font-size: 13px; color: var(--ink); background-color: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 5px 30px 5px 10px; max-width: 60%; appearance: none; -webkit-appearance: none; background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 16 16'><path d='M4 6l4 4 4-4' fill='none' stroke='%239aa3ad' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/></svg>"); background-repeat: no-repeat; background-position: right 10px center; }
 
-      /* machines */
       #search { width: 100%; font: inherit; font-size: 14px; color: var(--ink); background-color: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 30px 6px 10px; background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 16 16'><circle cx='7' cy='7' r='4.5' fill='none' stroke='%239aa3ad' stroke-width='1.6'/><path d='M10.5 10.5L14 14' stroke='%239aa3ad' stroke-width='1.6' stroke-linecap='round'/></svg>"); background-repeat: no-repeat; background-position: right 10px center; }
       #search::-webkit-search-cancel-button { -webkit-appearance: none; }
       #machines.all { max-height: 260px; overflow-y: auto; }

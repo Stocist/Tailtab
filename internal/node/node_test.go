@@ -19,8 +19,6 @@ import (
 	"tailscale.com/types/views"
 )
 
-// newTestNode returns a node with the login call stubbed, so the login path can
-// be driven without a control server, and a counter of login requests.
 func newTestNode(t *testing.T) (*Node, *int, *[]Status) {
 	t.Helper()
 	var mu sync.Mutex
@@ -51,9 +49,7 @@ func TestLoginIsRequestedOncePerEpisode(t *testing.T) {
 		t.Fatalf("NeedsLogin asked for %d login URLs, want 1", *logins)
 	}
 
-	// The bus is not rate limited, so the same state arrives again and again
-	// alongside prefs and health notifications. None of them changes the
-	// status, and none may start another login session.
+	// Unrate-limited duplicate notifications must not create login sessions.
 	for i := 0; i < 5; i++ {
 		n.apply(ctx, state(ipn.NeedsLogin))
 		n.apply(ctx, ipn.Notify{})
@@ -81,8 +77,6 @@ func TestLoginIsRequestedAgainForANewEpisode(t *testing.T) {
 	url := "https://login.tailscale.com/a/first"
 	n.apply(ctx, ipn.Notify{BrowseToURL: &url})
 
-	// Logging in clears the URL; a later logout puts the node back to
-	// NeedsLogin, and that episode needs a URL of its own.
 	n.apply(ctx, state(ipn.Running))
 	if got := n.Status().AuthURL; got != "" {
 		t.Errorf("AuthURL = %q after Running, want it cleared", got)
@@ -106,8 +100,7 @@ func TestFailedLoginRequestIsRetried(t *testing.T) {
 	ctx := context.Background()
 
 	n.apply(ctx, state(ipn.NeedsLogin))
-	// The first attempt failed, so the guard must not be latched: the next
-	// notification that changes something tries again.
+	// A failed request must not latch the per-episode guard.
 	n.apply(ctx, state(ipn.Starting))
 	n.apply(ctx, state(ipn.NeedsLogin))
 	if calls != 2 {
@@ -141,11 +134,9 @@ func TestApplyIPNStatusUsesTheMagicDNSName(t *testing.T) {
 			DNSName:  "laptop-tailtab-zen.tail4d5e6f.ts.net.",
 		},
 	})
-	// The suffix, not the display name: the split-tunnel rules match on it.
 	if st.Tailnet != "tail4d5e6f.ts.net" {
 		t.Errorf("Tailnet = %q, want the current tailnet's MagicDNS suffix", st.Tailnet)
 	}
-	// The node's own name, not the machine's OS hostname.
 	if st.Hostname != "laptop-tailtab-zen" {
 		t.Errorf("Hostname = %q, want laptop-tailtab-zen", st.Hostname)
 	}
@@ -154,11 +145,7 @@ func TestApplyIPNStatusUsesTheMagicDNSName(t *testing.T) {
 	}
 }
 
-// N3 (REVIEW.md). A tailnet rename, or a netmap landing after the node is
-// already Running, changes this node's own tailcfg.Node without a state
-// transition. Nothing else re-reads the status, so the popup — and the proxy's
-// guard, which is handed the suffix from here — would keep the old values for
-// the life of the process.
+// Self changes can alter routing data without a state transition and must refresh.
 func TestSelfChangeRefreshesTheStatus(t *testing.T) {
 	n, _, seen := newTestNode(t)
 	ctx := context.Background()
@@ -190,7 +177,6 @@ func TestSelfChangeRefreshesTheStatus(t *testing.T) {
 	if st.Hostname != "laptop-tailtab-zen" {
 		t.Errorf("Hostname = %q, want laptop-tailtab-zen", st.Hostname)
 	}
-	// It has to reach the extension, not just the cached status.
 	if len(*seen) == 0 {
 		t.Fatal("the refreshed status was never pushed to the extension")
 	}
@@ -198,7 +184,6 @@ func TestSelfChangeRefreshesTheStatus(t *testing.T) {
 		t.Errorf("the extension was pushed Tailnet %q", last.Tailnet)
 	}
 
-	// A notification that changes nothing must not push again.
 	pushes := len(*seen)
 	n.apply(ctx, ipn.Notify{SelfChange: &tailcfg.Node{StableID: "nodeid-1"}})
 	if reads != 2 {
@@ -238,7 +223,6 @@ func TestStateDirIsPerProfile(t *testing.T) {
 	}
 }
 
-// unhealthy builds a health snapshot with the given warnable codes and texts.
 func unhealthy(pairs ...string) *health.State {
 	hs := &health.State{Warnings: map[health.WarnableCode]health.UnhealthyState{}}
 	for i := 0; i+1 < len(pairs); i += 2 {
@@ -259,7 +243,6 @@ func TestHealthWarningsReachTheStatus(t *testing.T) {
 	)})
 
 	st := n.Status()
-	// Sorted by warnable code: login-state before not-in-map-poll.
 	want := []string{
 		"You are logged out. The last login error was: register request: all connection attempts failed",
 		"Cannot reach the coordination server",
@@ -267,8 +250,7 @@ func TestHealthWarningsReachTheStatus(t *testing.T) {
 	if !slices.Equal(st.Warnings, want) {
 		t.Errorf("Warnings = %q, want %q", st.Warnings, want)
 	}
-	// This is the whole point: a node that is logged out because it cannot
-	// reach control must not look like one merely waiting for the user.
+	// Surface control failures distinctly from an ordinary logged-out state.
 	if !strings.Contains(st.Error, "all connection attempts failed") {
 		t.Errorf("Error = %q, want the login-state warnable's text", st.Error)
 	}
@@ -285,12 +267,10 @@ func TestHealthChangesCountAsAChange(t *testing.T) {
 	if len(*seen) != pushes+1 {
 		t.Fatalf("a new warning pushed %d events, want 1", len(*seen)-pushes)
 	}
-	// The same warning again changes nothing and must be suppressed.
 	n.apply(ctx, ipn.Notify{Health: unhealthy("not-in-map-poll", "Cannot reach the coordination server")})
 	if len(*seen) != pushes+1 {
 		t.Errorf("an unchanged warning pushed another event")
 	}
-	// Recovering clears it, which is a change.
 	n.apply(ctx, ipn.Notify{Health: &health.State{}})
 	if len(*seen) != pushes+2 {
 		t.Fatalf("clearing the warnings pushed %d events, want 1", len(*seen)-pushes-1)
@@ -309,7 +289,6 @@ func TestLoginWarningIsReappliedAndCleared(t *testing.T) {
 	if got := n.Status().Error; got != "You are logged out." {
 		t.Errorf("Error = %q, want the login warning applied when the state arrives after it", got)
 	}
-	// Health recovers: the stale explanation must go with it.
 	n.apply(ctx, ipn.Notify{Health: &health.State{}})
 	n.apply(ctx, state(ipn.Starting))
 	n.apply(ctx, state(ipn.NeedsLogin))
@@ -319,20 +298,16 @@ func TestLoginWarningIsReappliedAndCleared(t *testing.T) {
 }
 
 func TestAnAuthURLIsNeverClearedByAStatusRefresh(t *testing.T) {
-	// applyIPNStatus runs on every refresh. A snapshot that happens to carry no
-	// AuthURL must not wipe the one the popup is showing.
 	st := Status{State: "NeedsLogin", AuthURL: "https://login.tailscale.com/a/live"}
 	applyIPNStatus(&st, &ipnstate.Status{BackendState: "NeedsLogin"})
 	if st.AuthURL != "https://login.tailscale.com/a/live" {
 		t.Errorf("AuthURL = %q, want the live URL kept", st.AuthURL)
 	}
-	// A snapshot that carries one while logged out may set it.
 	empty := Status{State: "NeedsLogin"}
 	applyIPNStatus(&empty, &ipnstate.Status{BackendState: "NeedsLogin", AuthURL: "https://login.tailscale.com/a/fresh"})
 	if empty.AuthURL != "https://login.tailscale.com/a/fresh" {
 		t.Errorf("AuthURL = %q, want the snapshot's URL", empty.AuthURL)
 	}
-	// Once Running the URL is spent and must not come back.
 	running := Status{State: "Running"}
 	applyIPNStatus(&running, &ipnstate.Status{BackendState: "Running", AuthURL: "https://login.tailscale.com/a/spent"})
 	if running.AuthURL != "" {
@@ -352,8 +327,6 @@ func TestHealthDoesNotClearAnAuthURL(t *testing.T) {
 		t.Errorf("AuthURL = %q after a health notification, want it untouched", got)
 	}
 }
-
-// ---------------------------------------------------------------- exit nodes
 
 func exitPeer(id, host string, online, offer bool) *ipnstate.PeerStatus {
 	return &ipnstate.PeerStatus{
@@ -377,8 +350,6 @@ func TestExitNodeOffersReachTheStatus(t *testing.T) {
 		},
 	})
 
-	// Only the peers that offer, sorted by name so a map's iteration order
-	// cannot make every refresh look like a change.
 	want := []ExitNode{
 		{ID: "nodeid-attic", Name: "attic", DNSName: "attic.tail1a2b3c.ts.net", Online: false, OS: "linux"},
 		{ID: "nodeid-server", Name: "server", DNSName: "server.tail1a2b3c.ts.net", Online: true, OS: "linux"},
@@ -410,16 +381,12 @@ func TestExitNodeIsActiveOnlyWhenOnline(t *testing.T) {
 	if st.ExitNodeActive {
 		t.Error("ExitNodeActive is true for an offline exit node; browsing must be blocked, not rerouted")
 	}
-	// Selected but gone from the netmap: ipnstate reports no exit node at all.
 	applyIPNStatus(&st, base(nil))
 	if st.ExitNodeActive {
 		t.Error("ExitNodeActive is true with no exit node in the netmap")
 	}
 }
 
-// The selection comes from the prefs, not from the status: a node that has left
-// the netmap is still selected, and reading it from the status would make it
-// look as though nothing was.
 func TestExitNodeSelectionComesFromThePrefs(t *testing.T) {
 	n, _, seen := newTestNode(t)
 	ctx := context.Background()
@@ -442,8 +409,6 @@ func TestExitNodeSelectionComesFromThePrefs(t *testing.T) {
 	if n.Status().ExitNodeActive {
 		t.Error("ExitNodeActive is true for a node that is not in the netmap")
 	}
-	// A prefs change has to refresh: whether that node is usable is only
-	// visible in the status.
 	if reads != 1 {
 		t.Errorf("a prefs notification caused %d status reads, want 1", reads)
 	}
@@ -479,7 +444,6 @@ func TestSetExitNodeRefusesAnUnknownID(t *testing.T) {
 	if err := n.SetExitNode("nodeid-server"); err != nil {
 		t.Errorf("a known exit node was refused: %v", err)
 	}
-	// Clearing needs no offer to match.
 	if err := n.SetExitNode(""); err != nil {
 		t.Errorf("clearing the exit node failed: %v", err)
 	}
@@ -507,9 +471,7 @@ func TestExitNodeChangesCountAsAChange(t *testing.T) {
 	}
 }
 
-// Seen live: after Log out, the auth page offered to connect "Laptop" — the
-// OS hostname — because lc.Logout resets the prefs and tsnet only applies the
-// node's own at Start. The prefs go back before every login request.
+// Logout resets the hostname preference, which must be restored before login.
 func TestLoginRestoresTheHostnameAfterALogout(t *testing.T) {
 	n, logins, _ := newTestNode(t)
 	n.hostname = "mac-tailtab-edge"
@@ -541,8 +503,6 @@ func TestLoginRestoresTheHostnameAfterALogout(t *testing.T) {
 }
 
 func TestLoginWithoutAClientStillWorksInTests(t *testing.T) {
-	// No editPrefs and no hostname, as the older tests set things up: the
-	// login path must not need them.
 	n, logins, _ := newTestNode(t)
 	if err := n.requestLogin(context.Background()); err != nil {
 		t.Fatal(err)
@@ -567,15 +527,11 @@ func TestAccountsComeFromTheLoginProfiles(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("accounts = %+v, want %+v", got, want)
 	}
-	// A node that has never logged in: no profiles, and an empty current one
-	// must not be marked active by an empty-ID match.
 	if got := accountsFrom(ipn.LoginProfile{}, nil); len(got) != 0 {
 		t.Fatalf("accounts before any login = %+v, want none", got)
 	}
 }
 
-// PROFILES.md §3: a switch wipes the prefs and tsnet only sets its own at
-// Start, so the node's hostname and WantRunning go back right after.
 func TestSwitchAccountValidatesAndRestoresPrefs(t *testing.T) {
 	n, _, _ := newTestNode(t)
 	n.hostname = "mac-tailtab-edge"
@@ -707,7 +663,6 @@ func TestAddAccountSetsTheControlServerBeforeLogin(t *testing.T) {
 		}
 		return &mp.Prefs, nil
 	}
-	// A profile with no accounts may choose its server; it is pinned from then on.
 	if err := n.AddAccount("https://headscale.example.com"); err != nil {
 		t.Fatal(err)
 	}
@@ -717,7 +672,6 @@ func TestAddAccountSetsTheControlServerBeforeLogin(t *testing.T) {
 	if readStateFile(n.dir, controlURLFile) != "https://headscale.example.com" {
 		t.Fatal("the coordination server was not pinned")
 	}
-	// Once accounts exist, a different server is refused rather than applied.
 	n.st.Accounts = []Account{{ID: "p1", Name: "a", Active: true}}
 	order = nil
 	if err := n.AddAccount("https://other.example.com"); err == nil {
@@ -726,7 +680,6 @@ func TestAddAccountSetsTheControlServerBeforeLogin(t *testing.T) {
 	if len(order) != 0 {
 		t.Fatalf("a refused add still touched the backend: %v", order)
 	}
-	// The pinned server is used for every further account, asked for or not.
 	if err := n.AddAccount(""); err != nil {
 		t.Fatal(err)
 	}
@@ -737,14 +690,11 @@ func TestAddAccountSetsTheControlServerBeforeLogin(t *testing.T) {
 
 func TestPinControlURL(t *testing.T) {
 	loggedIn := func(dir string) {
-		// What tsnet leaves behind once a login has happened.
 		if err := os.WriteFile(filepath.Join(dir, "tailscaled.state"), []byte(`{"_profiles":"e30=","_current-profile":"cA=="}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	// A profile that starts on Tailscale's server is pinned to it from the
-	// first start, so a setting made after its login cannot repoint it.
 	dir := t.TempDir()
 	eff, note, err := pinControlURL(dir, "")
 	if err != nil || eff != "" || note != "" {
@@ -759,7 +709,6 @@ func TestPinControlURL(t *testing.T) {
 		t.Fatalf("a setting after login must be reported, not applied: %q %q %v", eff, note, err)
 	}
 
-	// Before any login the profile may still change its mind.
 	dir = t.TempDir()
 	if _, _, err := pinControlURL(dir, ""); err != nil {
 		t.Fatal(err)
@@ -768,8 +717,6 @@ func TestPinControlURL(t *testing.T) {
 	if err != nil || eff != "https://hs.example.com" || note != "" {
 		t.Fatalf("re-pin before login: %q %q %v", eff, note, err)
 	}
-	// After login, a cleared setting keeps the pin (B1) and a different one is
-	// reported.
 	loggedIn(dir)
 	eff, note, err = pinControlURL(dir, "")
 	if err != nil || eff != "https://hs.example.com" || note != "" {
@@ -840,8 +787,6 @@ func TestExitNodeSelectionIsRememberedPerAccount(t *testing.T) {
 		t.Fatal("the selection was not written down for account pA")
 	}
 
-	// A restart: the first refresh comes before the netmap, with nothing on
-	// offer; it must not use up the restore.
 	n.st.ExitNode = ""
 	n.exitRestored = nil
 	n.readStatus = func(context.Context) (*ipnstate.Status, error) {
@@ -851,7 +796,6 @@ func TestExitNodeSelectionIsRememberedPerAccount(t *testing.T) {
 	if strings.Join(set, ",") != "nodeA" {
 		t.Fatalf("prefs edits = %v, nothing should be restored before the node is offered", set)
 	}
-	// Then the netmap arrives with nodeA on offer -> put back.
 	n.readStatus = func(context.Context) (*ipnstate.Status, error) {
 		return &ipnstate.Status{BackendState: "Running", Peer: map[key.NodePublic]*ipnstate.PeerStatus{
 			key.NewNode().Public(): {ID: "nodeA", HostName: "server", ExitNodeOption: true, Online: true},
@@ -866,8 +810,6 @@ func TestExitNodeSelectionIsRememberedPerAccount(t *testing.T) {
 		t.Fatalf("prefs edits = %v, restored more than once", set)
 	}
 
-	// Account pB, whose tailnet does not offer nodeA: nothing is pushed even
-	// though a memory says nodeA (the F2 regression).
 	set = nil
 	n.st.ExitNode = ""
 	n.st.Accounts = []Account{{ID: "pA"}, {ID: "pB", Active: true}}

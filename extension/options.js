@@ -1,14 +1,9 @@
-// Tailtab settings page. Everything here is a value the background script
-// reads when it needs it; nothing talks to the host directly.
-
 "use strict";
 
 const api = typeof browser !== "undefined" ? browser : typeof chrome !== "undefined" ? chrome : null;
 const el = (id) => document.getElementById(id);
 
-// tailtabValidControlURL mirrors the host's check (nm.ValidControlURL): http or
-// https, a host, no credentials, no query or fragment. The host checks again;
-// this just gives the user the error before they leave the page.
+// Match nm.ValidControlURL so invalid settings fail before leaving the page.
 function tailtabValidControlURL(s) {
   if (!s) return "";
   if (s.length > 512) return "That URL is too long.";
@@ -50,8 +45,6 @@ function save(value) {
   });
 }
 
-// Wired only where there is a page; the validator above is also required by
-// the test suite under node.
 if (typeof document !== "undefined" && api) {
   el("save").addEventListener("click", () => save(el("controlURL").value));
   el("reset").addEventListener("click", () => save(""));

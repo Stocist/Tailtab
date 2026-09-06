@@ -1,9 +1,5 @@
-// Package install writes and removes the native-messaging manifests that let a
-// browser start the tailtab host.
-//
-// Every browser looks for a manifest named after the host in a directory (or,
-// on Windows, a registry key) of its own. The manifest names the absolute path
-// of the binary and the one extension allowed to talk to it.
+// Package install manages browser-native messaging manifests. Each manifest
+// pins the host binary and the extension allowed to launch it.
 package install
 
 import (
@@ -22,11 +18,8 @@ const HostName = "com.stocist.tailtab"
 const manifestFile = HostName + ".json"
 const description = "tailtab: a Tailscale node for one browser profile"
 
-// A Chromium extension ID is 32 characters of a-p (a hex digest mapped onto
-// letters).
 var chromiumIDRE = regexp.MustCompile(`^[a-p]{32}$`)
 
-// A Gecko add-on ID is either name@domain or a braced UUID.
 var (
 	geckoIDRE   = regexp.MustCompile(`^[\w.+-]+@[\w.-]+$`)
 	geckoUUIDRE = regexp.MustCompile(`^\{[0-9a-f-]{36}\}$`)
@@ -40,8 +33,6 @@ func ValidGeckoID(id string) bool {
 	return geckoIDRE.MatchString(id) || geckoUUIDRE.MatchString(id)
 }
 
-// manifest is the JSON both browser families read. Chromium wants
-// allowed_origins, Gecko wants allowed_extensions; each target uses one.
 type manifest struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
@@ -54,23 +45,14 @@ type manifest struct {
 
 // Target is one place a manifest goes.
 type Target struct {
-	// Browser is a label for messages, e.g. "Microsoft Edge".
 	Browser string
-	// Dir is where the manifest file lives.
-	Dir string
-	// File is the manifest's file name inside Dir.
-	File string
-	// Create is whether Dir may be created when it does not exist. It is
-	// true for the browsers tailtab supports and false for bonus browsers, so
-	// a directory is never created for a browser that is not installed.
+	Dir     string
+	File    string
+	// Create permits creating Dir for explicitly supported browsers.
 	Create bool
-	// Registry is the HKCU key that must point at the manifest, on Windows
-	// only; empty elsewhere. Windows browsers find hosts through the
-	// registry, not a directory.
+	// Registry is the Windows HKCU key pointing to the manifest.
 	Registry string
-	// Probe is an HKCU key whose presence means the browser is installed,
-	// for Windows targets that are only registered when it is (Create is
-	// false). Empty means always register.
+	// Probe prevents registering optional Windows browsers that are absent.
 	Probe string
 
 	manifest manifest
@@ -81,17 +63,13 @@ func (t Target) Path() string { return filepath.Join(t.Dir, t.File) }
 
 // Options describes an installation.
 type Options struct {
-	// Home is the user's home directory.
-	Home string
-	// ExePath is the absolute path of the tailtab binary.
+	Home    string
 	ExePath string
-	// EdgeID is the Chromium extension ID; GeckoID the Firefox/Zen add-on ID.
 	EdgeID  string
 	GeckoID string
-	// GOOS overrides the platform, for tests. Empty means runtime.GOOS.
+	// GOOS overrides runtime.GOOS for tests.
 	GOOS string
-	// LocalAppData is Windows's %LOCALAPPDATA%; empty means the environment
-	// or the conventional path under Home.
+	// LocalAppData overrides the Windows manifest directory.
 	LocalAppData string
 }
 
@@ -102,17 +80,13 @@ func (o Options) goos() string {
 	return runtime.GOOS
 }
 
-// dirs lists every directory or registry location a platform's browsers read,
-// without the manifests, so uninstall can use the same list.
 func dirs(goos, home, localAppData string) []Target {
 	switch goos {
 	case "darwin":
 		as := filepath.Join(home, "Library", "Application Support")
 		return []Target{
 			{Browser: "Microsoft Edge", Dir: filepath.Join(as, "Microsoft Edge", "NativeMessagingHosts"), File: manifestFile, Create: true},
-			// Zen reads Mozilla's directory and only that one, so this covers
-			// Zen and Firefox both. The directory does not exist until some
-			// host creates it; never write under Application Support/zen/.
+			// Zen and Firefox both read Mozilla's directory on macOS.
 			{Browser: "Zen and Firefox", Dir: filepath.Join(as, "Mozilla", "NativeMessagingHosts"), File: manifestFile, Create: true},
 			{Browser: "Google Chrome", Dir: filepath.Join(as, "Google", "Chrome", "NativeMessagingHosts"), File: manifestFile},
 			{Browser: "Chromium", Dir: filepath.Join(as, "Chromium", "NativeMessagingHosts"), File: manifestFile},
@@ -125,17 +99,15 @@ func dirs(goos, home, localAppData string) []Target {
 		}
 		return []Target{
 			{Browser: "Microsoft Edge", Dir: filepath.Join(cfg, "microsoft-edge", "NativeMessagingHosts"), File: manifestFile, Create: true},
-			// Firefox, Zen and every other Gecko browser read ~/.mozilla.
+			// Gecko browsers share ~/.mozilla on Linux.
 			{Browser: "Zen and Firefox", Dir: filepath.Join(home, ".mozilla", "native-messaging-hosts"), File: manifestFile, Create: true},
 			{Browser: "Google Chrome", Dir: filepath.Join(cfg, "google-chrome", "NativeMessagingHosts"), File: manifestFile},
 			{Browser: "Chromium", Dir: filepath.Join(cfg, "chromium", "NativeMessagingHosts"), File: manifestFile},
 			{Browser: "Brave", Dir: filepath.Join(cfg, "BraveSoftware", "Brave-Browser", "NativeMessagingHosts"), File: manifestFile},
 		}
 	case "windows":
-		// Windows browsers find a host through HKCU\Software\<vendor>\
-		// NativeMessagingHosts\<host name>, whose default value is the path
-		// of the manifest. The files themselves live in one directory of
-		// ours. The two families need different manifests, hence two files.
+		// Windows discovers hosts through HKCU; Chromium and Gecko need separate
+		// manifest files because their allowlist fields differ.
 		if localAppData == "" {
 			localAppData = os.Getenv("LOCALAPPDATA")
 		}
@@ -148,8 +120,7 @@ func dirs(goos, home, localAppData string) []Target {
 		return []Target{
 			{Browser: "Microsoft Edge", Dir: dir, File: chromium, Create: true, Registry: `Software\Microsoft\Edge\NativeMessagingHosts\` + HostName},
 			{Browser: "Zen and Firefox", Dir: dir, File: gecko, Create: true, Registry: `Software\Mozilla\NativeMessagingHosts\` + HostName},
-			// Bonus browsers: registered only when the browser has left its
-			// own key behind, so an absent browser gets no dangling key.
+			// Optional browsers are registered only when their own key exists.
 			{Browser: "Google Chrome", Dir: dir, File: chromium, Registry: `Software\Google\Chrome\NativeMessagingHosts\` + HostName, Probe: `Software\Google\Chrome`},
 			{Browser: "Chromium", Dir: dir, File: chromium, Registry: `Software\Chromium\NativeMessagingHosts\` + HostName, Probe: `Software\Chromium`},
 			{Browser: "Brave", Dir: dir, File: chromium, Registry: `Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\` + HostName, Probe: `Software\BraveSoftware\Brave-Browser`},
@@ -158,11 +129,9 @@ func dirs(goos, home, localAppData string) []Target {
 	return nil
 }
 
-// windowsAbsRE matches a drive-letter or UNC path.
 var windowsAbsRE = regexp.MustCompile(`^(?:[A-Za-z]:[\\/]|\\\\)`)
 
-// isAbs is filepath.IsAbs for the target platform rather than the running
-// one, so a Windows layout can be validated (and tested) from anywhere.
+// isAbs validates paths for the target platform, enabling cross-platform tests.
 func isAbs(goos, p string) bool {
 	if goos == "windows" {
 		return windowsAbsRE.MatchString(p)
@@ -170,8 +139,7 @@ func isAbs(goos, p string) bool {
 	return filepath.IsAbs(p)
 }
 
-// Targets validates opts and returns every manifest that would be written.
-// Nothing touches the filesystem.
+// Targets validates opts and returns targets without touching the filesystem.
 func Targets(opts Options) ([]Target, error) {
 	if opts.Home == "" {
 		return nil, errors.New("no home directory")
@@ -226,11 +194,11 @@ func Install(opts Options) ([]string, error) {
 	wroteFile := map[string]bool{}
 	for _, t := range targets {
 		if t.Probe != "" && !registryKeyExists(t.Probe) {
-			continue // that browser is not installed (Windows)
+			continue
 		}
 		if _, err := os.Stat(t.Dir); err != nil {
 			if !t.Create && t.Registry == "" {
-				continue // that browser is not installed
+				continue
 			}
 			if err := os.MkdirAll(t.Dir, 0o755); err != nil {
 				return written, fmt.Errorf("creating %s: %w", t.Dir, err)
@@ -287,7 +255,6 @@ func uninstall(goos, home, localAppData string) ([]string, error) {
 		case err == nil:
 			removed = append(removed, p)
 		case errors.Is(err, os.ErrNotExist):
-			// nothing to do
 		default:
 			return removed, fmt.Errorf("removing %s: %w", p, err)
 		}
