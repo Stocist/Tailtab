@@ -349,8 +349,7 @@ function render(msg) {
   if (st.authURL && (awaitingLogin || switchingTo === "new") && !openedLogin) {
     openedLogin = st.authURL;
     awaitingLogin = false;
-    api.tabs.create({ url: st.authURL });
-    window.close();
+    openLogin(st.authURL);
   }
   if (st.authURL || st.error || running || state === "Starting") {
     awaitingLogin = false;
@@ -479,8 +478,7 @@ el("toggle").addEventListener("click", () => {
     return;
   }
   if (st.authURL) {
-    api.tabs.create({ url: st.authURL });
-    window.close();
+    openLogin(st.authURL);
     return;
   }
   connect();
@@ -500,9 +498,7 @@ function connect() {
 
 el("login").addEventListener("click", () => {
   const url = latest && latest.status && latest.status.authURL;
-  if (!url) return;
-  api.tabs.create({ url: url });
-  window.close();
+  if (url) openLogin(url);
 });
 
 el("connect").addEventListener("click", connect);

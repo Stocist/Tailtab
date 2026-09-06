@@ -1582,6 +1582,22 @@ test("the installed PAC is mandatory, so a script failure blocks instead of goin
   eq(env.log.lastValue.pacScript.mandatory, true, "parked");
 });
 
+test("a login link that is not https is never opened", () => {
+  const ui = openPopupUI();
+  const needsLogin = (authURL) => ui.push({ connected: true, status: { state: "NeedsLogin", authURL: authURL, warnings: [], accounts: [] } });
+  needsLogin("");
+  ui.clickToggle();
+  needsLogin("javascript:alert(1)");
+  ui.els.login.listeners.click();
+  ui.clickToggle();
+  needsLogin("data:text/html,hi");
+  ui.els.login.listeners.click();
+  eq(ui.opened, [], "neither javascript: nor data: was opened");
+  needsLogin("https://login.tailscale.com/a/1");
+  ui.els.login.listeners.click();
+  eq(ui.opened, ["https://login.tailscale.com/a/1"], "https is opened");
+});
+
 test("a machine opens only as a bare tailnet host", () => {
   const ui = openPopupUI();
   const push = (peers) => ui.push({ connected: true, status: { state: "Running", tailnet: "t.ts.net", proxyPort: 1, warnings: [], accounts: [], peers: peers } });

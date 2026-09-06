@@ -846,3 +846,64 @@ func TestStatusKeepsOurHostnameBeforeLogin(t *testing.T) {
 		t.Fatalf("hostname = %q after login", st.Hostname)
 	}
 }
+
+func TestALoginURLOffTheCoordinationServerIsRefused(t *testing.T) {
+	n, logins, _ := newTestNode(t)
+	ctx := context.Background()
+	n.apply(ctx, state(ipn.NeedsLogin))
+
+	bad := []string{
+		"https://evil.example/login",
+		"http://login.tailscale.com/a/x",
+		"javascript:alert(1)",
+		"https://user@login.tailscale.com/a/x",
+		"https://login.tailscale.com.evil.example/a/x",
+	}
+	for _, u := range bad {
+		n.apply(ctx, ipn.Notify{BrowseToURL: &u})
+		if got := n.Status().AuthURL; got != "" {
+			t.Errorf("AuthURL = %q after %q, want it dropped", got, u)
+		}
+	}
+	if got := n.Status().Error; got != refusedLoginError {
+		t.Errorf("Error = %q, want the refusal", got)
+	}
+	n.apply(ctx, state(ipn.NeedsLogin))
+	if *logins != 1 {
+		t.Errorf("%d login requests after refused links, want 1: a refusal must not loop", *logins)
+	}
+
+	good := "https://login.tailscale.com/a/deadbeef"
+	n.apply(ctx, ipn.Notify{BrowseToURL: &good})
+	if st := n.Status(); st.AuthURL != good || st.Error != "" {
+		t.Errorf("after a good link AuthURL = %q, Error = %q", st.AuthURL, st.Error)
+	}
+}
+
+func TestALoginURLMustBeOnThePinnedServer(t *testing.T) {
+	n, _, _ := newTestNode(t)
+	n.controlURL = "https://headscale.example.com:8443"
+	ctx := context.Background()
+	n.apply(ctx, state(ipn.NeedsLogin))
+
+	tailscale := "https://login.tailscale.com/a/x"
+	n.apply(ctx, ipn.Notify{BrowseToURL: &tailscale})
+	if got := n.Status().AuthURL; got != "" {
+		t.Errorf("AuthURL = %q, want Tailscale's login host refused for a pinned Headscale", got)
+	}
+	own := "https://headscale.example.com:8443/register/abc"
+	n.apply(ctx, ipn.Notify{BrowseToURL: &own})
+	if got := n.Status().AuthURL; got != own {
+		t.Errorf("AuthURL = %q, want %q", got, own)
+	}
+}
+
+func TestAnInitialStatusLoginURLIsVettedToo(t *testing.T) {
+	n, _, _ := newTestNode(t)
+	ctx := context.Background()
+	n.apply(ctx, ipn.Notify{InitialStatus: &ipnstate.Status{BackendState: "NeedsLogin", AuthURL: "https://evil.example/a"}})
+	if got := n.Status().AuthURL; got != "" {
+		t.Errorf("AuthURL = %q from the initial status, want it dropped", got)
+	}
+}
+

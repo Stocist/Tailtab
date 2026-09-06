@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -112,17 +113,12 @@ type Node struct {
 	loginRequested bool
 	// loginWarning survives health and state notifications arriving out of order.
 	loginWarning string
-	// startLogin is lc.StartLoginInteractive once the node is up. It is a
-	// field so tests can drive the login path without a control server.
-	startLogin func(context.Context) error
-	// readStatus is lc.Status once the node is up, for the same reason:
-	// refresh has to be observable in a test with no local API. It is the
-	// with-peers call, because the exit-node list is built from the peers.
-	readStatus func(context.Context) (*ipnstate.Status, error)
-	// editPrefs is lc.EditPrefs, a field for the same reason.
-	editPrefs func(context.Context, *ipn.MaskedPrefs) (*ipn.Prefs, error)
-	// readProfiles, switchProfile and newProfile are lc.ProfileStatus,
-	// lc.SwitchProfile and lc.SwitchToEmptyProfile: the account switcher.
+	// loginRefused keeps the refusal on the status until the episode ends.
+	loginRefused bool
+	// LocalAPI operations are fields so tests need no control server.
+	startLogin    func(context.Context) error
+	readStatus    func(context.Context) (*ipnstate.Status, error)
+	editPrefs     func(context.Context, *ipn.MaskedPrefs) (*ipn.Prefs, error)
 	readProfiles  func(context.Context) (ipn.LoginProfile, []ipn.LoginProfile, error)
 	switchProfile func(context.Context, ipn.ProfileID) error
 	newProfile    func(context.Context) error
@@ -399,6 +395,7 @@ func (n *Node) apply(ctx context.Context, notify ipn.Notify) {
 	changed := n.update(func(st *Status) {
 		if s := notify.InitialStatus; s != nil {
 			applyIPNStatus(st, s)
+			n.vetAuthURL(st)
 		}
 		if notify.State != nil {
 			st.State = notify.State.String()
@@ -409,7 +406,10 @@ func (n *Node) apply(ctx context.Context, notify ipn.Notify) {
 		}
 		if notify.BrowseToURL != nil {
 			st.AuthURL = *notify.BrowseToURL
-			n.loginRequested = false // the request was answered
+			// A refused link still answers the request; asking again would loop.
+			if n.vetAuthURL(st) {
+				n.loginRequested = false
+			}
 		}
 		if notify.Prefs != nil && notify.Prefs.Valid() {
 			st.ExitNode = string(notify.Prefs.ExitNodeID())
@@ -423,9 +423,13 @@ func (n *Node) apply(ctx context.Context, notify ipn.Notify) {
 		} else if st.State == ipn.NeedsLogin.String() {
 			// Distinguish control failure from an ordinary logged-out state.
 			st.Error = n.loginWarning
+			if n.loginRefused {
+				st.Error = refusedLoginError
+			}
 		}
 		if st.State != ipn.NeedsLogin.String() {
-			n.loginRequested = false // a new episode may need a new URL
+			n.loginRequested = false
+			n.loginRefused = false
 		}
 		wantLogin = st.State == ipn.NeedsLogin.String() && st.AuthURL == "" && !n.loginRequested
 	})
@@ -479,6 +483,7 @@ func (n *Node) refresh(ctx context.Context) {
 	var restore string
 	n.update(func(st *Status) {
 		applyIPNStatus(st, s)
+		n.vetAuthURL(st)
 		if haveAccounts {
 			st.Accounts = accounts
 		}
@@ -819,6 +824,7 @@ func (n *Node) SwitchAccount(id string) error {
 
 // clearAccountState prevents old-account data surviving until new bus state.
 func (n *Node) clearAccountState(st *Status) {
+	n.loginRefused = false
 	st.AuthURL = ""
 	st.Error = ""
 	st.Tailnet = ""
@@ -902,8 +908,41 @@ func (n *Node) Logout() error {
 	return nil
 }
 
-// requestLogin asks control for an auth URL, at most once per NeedsLogin
-// episode from the bus. The URL arrives asynchronously as BrowseToURL.
+const refusedLoginError = "The coordination server sent a login link for another site, which tailtab will not open."
+
+// loginURLAllowed reports whether control may send the browser to u: https on
+// the pinned server's host, or on Tailscale's login host for the default.
+func loginURLAllowed(u, controlURL string) bool {
+	p, err := url.Parse(u)
+	if err != nil || p.Scheme != "https" || p.User != nil || p.Hostname() == "" {
+		return false
+	}
+	host := strings.ToLower(p.Hostname())
+	if controlURL == "" {
+		return host == "login.tailscale.com" || host == "controlplane.tailscale.com"
+	}
+	c, err := url.Parse(controlURL)
+	return err == nil && host == strings.ToLower(c.Hostname())
+}
+
+// vetAuthURL drops a login URL that is not on the coordination server and
+// reports whether one was kept. Called with n.mu held.
+func (n *Node) vetAuthURL(st *Status) bool {
+	if st.AuthURL == "" {
+		return false
+	}
+	if loginURLAllowed(st.AuthURL, n.controlURL) {
+		n.loginRefused = false
+		return true
+	}
+	log.Printf("refusing a login URL off the coordination server: %q", st.AuthURL)
+	st.AuthURL = ""
+	st.Error = refusedLoginError
+	n.loginRefused = true
+	return false
+}
+
+// requestLogin permits one in-flight request per NeedsLogin episode.
 func (n *Node) requestLogin(ctx context.Context) error {
 	n.mu.Lock()
 	login := n.startLogin
