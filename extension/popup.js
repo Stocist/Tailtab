@@ -441,7 +441,7 @@ function render(msg) {
     el("controlrow").hidden = !custom;
     setText("control", custom ? control.replace(/^https?:\/\//, "") : "");
   }
-  setText("port", st.proxyPort ? "local proxy 127.0.0.1:" + st.proxyPort : "");
+  setText("port", st.proxyPort ? "local proxy\n127.0.0.1:" + st.proxyPort : "");
 
   el("login").hidden = !st.authURL;
   el("connect").hidden = running || !!st.authURL || !msg.connected;

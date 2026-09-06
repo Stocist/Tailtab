@@ -98,10 +98,12 @@
       #machines .more { color: var(--muted); font-size: 12px; justify-content: flex-start; gap: 6px; }
       #machines .more button { color: var(--accent); font-size: 12px; }
 
-      /* footer */
-      .foot { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; color: var(--muted); font-size: 11.5px; font-family: var(--mono); opacity: 0.8; }
+      .foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 14px; color: var(--muted); font-size: 11.5px; font-family: var(--mono); opacity: 0.8; }
       .foot button { color: var(--accent); font-family: inherit; }
-      .foot #settings { color: var(--muted); margin-right: 10px; }
+      .foot #port { min-width: 0; white-space: pre-line; }
+      /* Two lines on each side, the right pair flush right and never shrunk. */
+      .foot .links { display: flex; flex-direction: column; align-items: flex-end; flex: none; }
+      .foot #settings { color: var(--muted); }
       #warning { margin: 10px 14px 0; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--warn) 12%, transparent); color: var(--warn); font-size: 12.5px; }
       #warning.bad { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad); }
       #copied { position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 4px 10px; border-radius: 999px; font-size: 12px; }
@@ -153,7 +155,7 @@
 
     <div class="foot">
       <span id="port"></span>
-      <span>
+      <span class="links">
         <button id="settings" title="Settings">Settings</button>
         <button id="logout" hidden>Log out</button>
       </span>
