@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -147,7 +148,15 @@ const (
 	exitNodeFile   = "exit-node"
 )
 
-func exitNodeFileFor(account string) string { return exitNodeFile + "." + account }
+var accountIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// exitNodeFileFor returns "" for an id that is not safe as a file name.
+func exitNodeFileFor(account string) string {
+	if !accountIDPattern.MatchString(account) {
+		return ""
+	}
+	return exitNodeFile + "." + account
+}
 
 func activeAccountID(accounts []Account) string {
 	for _, a := range accounts {
@@ -159,7 +168,7 @@ func activeAccountID(accounts []Account) string {
 }
 
 func readStateFile(dir, name string) string {
-	if dir == "" {
+	if dir == "" || name == "" {
 		return ""
 	}
 	b, err := os.ReadFile(filepath.Join(dir, name))
@@ -170,7 +179,7 @@ func readStateFile(dir, name string) string {
 }
 
 func writeStateFile(dir, name, value string) error {
-	if dir == "" {
+	if dir == "" || name == "" {
 		return nil
 	}
 	p := filepath.Join(dir, name)

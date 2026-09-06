@@ -907,3 +907,24 @@ func TestAnInitialStatusLoginURLIsVettedToo(t *testing.T) {
 	}
 }
 
+func TestExitNodeFileRefusesAnUnsafeAccountID(t *testing.T) {
+	for _, id := range []string{"", "../x", "a/b", "a b", "."} {
+		if got := exitNodeFileFor(id); got != "" {
+			t.Errorf("exitNodeFileFor(%q) = %q, want none", id, got)
+		}
+	}
+	if got := exitNodeFileFor("1a2b3c4d"); got != "exit-node.1a2b3c4d" {
+		t.Errorf("exitNodeFileFor(hex) = %q", got)
+	}
+	dir := t.TempDir()
+	if err := writeStateFile(dir, exitNodeFileFor("../x"), "node"); err != nil {
+		t.Fatal(err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Errorf("%d files written for an unsafe id, want none", len(entries))
+	}
+	if got := readStateFile(dir, exitNodeFileFor("../x")); got != "" {
+		t.Errorf("read %q for an unsafe id", got)
+	}
+}
+
