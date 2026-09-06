@@ -92,8 +92,7 @@ func allowExitHost(host string, routes []netip.Prefix) error {
 	if h == "" {
 		return fmt.Errorf("%w: no host", ErrNotTailnet)
 	}
-	if addr, err := netip.ParseAddr(h); err == nil {
-		addr = addr.Unmap()
+	if addr, ok := hostAddr(h); ok {
 		if tailscaleV4.Contains(addr) || tailscaleV6.Contains(addr) {
 			return nil
 		}
@@ -110,6 +109,9 @@ func allowExitHost(host string, routes []netip.Prefix) error {
 		}
 		return nil
 	}
+	if strings.ContainsAny(h, ":%") {
+		return fmt.Errorf("%w: %s is neither an address nor a name", ErrNotTailnet, h)
+	}
 	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
 		return fmt.Errorf("%w: %s is loopback", ErrNotTailnet, h)
 	}
@@ -122,30 +124,26 @@ func allowExitHost(host string, routes []netip.Prefix) error {
 
 var dottedNumeric = regexp.MustCompile(`^[0-9.]+$`)
 
-// allowTailnetHost reports whether host is something the tailnet can serve.
-//
-// suffix is this node's own MagicDNS suffix, which is not under .ts.net when the
-// tailnet uses a custom domain. It is empty until the node reports one, and
-// until then only the .ts.net and single-label rules apply.
-//
-// Without this check the listener is a general-purpose open forward proxy, not
-// a tailnet proxy: UserDial falls back to the system resolver and then to a
-// plain dial for anything MagicDNS does not know, so any local process could
-// use it to reach the whole internet. The extension only ever sends tailnet
-// traffic here, so refusing the rest costs nothing.
-//
-// These are the rules in extension/rules.js, in Go. Nothing keeps the two in
-// step automatically: they are held together by testdata/tailnet-hosts.json,
-// a shared table of decisions that both this function and rules.js are tested
-// against, so a change to one without the other fails a test.
+// hostAddr parses h without a zone: Prefix.Contains never matches a zoned
+// address, so "::1%lo0" would pass every range check.
+func hostAddr(h string) (netip.Addr, bool) {
+	addr, err := netip.ParseAddr(h)
+	if err != nil || addr.Zone() != "" {
+		return netip.Addr{}, false
+	}
+	return addr.Unmap(), true
+}
+
+// allowTailnetHost prevents UserDial's system fallback from turning the listener
+// into an open forward proxy. The browser and host enforce the same decisions
+// from testdata/tailnet-hosts.json.
 func allowTailnetHost(host, suffix string, routes []netip.Prefix) error {
 	h := strings.ToLower(strings.TrimSuffix(host, "."))
 	h = strings.TrimSuffix(strings.TrimPrefix(h, "["), "]")
 	if h == "" {
 		return fmt.Errorf("%w: no host", ErrNotTailnet)
 	}
-	if addr, err := netip.ParseAddr(h); err == nil {
-		addr = addr.Unmap()
+	if addr, ok := hostAddr(h); ok {
 		if tailscaleV4.Contains(addr) || tailscaleV6.Contains(addr) {
 			return nil
 		}
@@ -157,6 +155,9 @@ func allowTailnetHost(host, suffix string, routes []netip.Prefix) error {
 			return nil
 		}
 		return fmt.Errorf("%w: %s is outside %s, %s and the tailnet's subnet routes", ErrNotTailnet, h, tailscaleV4, tailscaleV6)
+	}
+	if strings.ContainsAny(h, ":%") {
+		return fmt.Errorf("%w: %s is neither an address nor a name", ErrNotTailnet, h)
 	}
 	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
 		return fmt.Errorf("%w: %s is loopback", ErrNotTailnet, h)

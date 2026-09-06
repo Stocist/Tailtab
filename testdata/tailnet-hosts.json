@@ -103,6 +103,11 @@
     {"host": "fe80::1", "suffix": "", "routes": ["fe80::/10"], "proxy": false, "why": "IPv6 link-local is never routed"},
     {"host": "fd00:1:2::5", "suffix": "", "routes": ["fd00::/8"], "proxy": false, "why": "broader than /16 is not an IPv6 subnet route"},
     {"host": "010.0.0.1", "suffix": "", "routes": ["10.0.0.0/8"], "proxy": false, "why": "a leading-zero octet is not an address (N1)"},
-    {"host": "10.0.0.1", "suffix": "", "routes": ["10.0.0.0/8"], "proxy": true, "why": "the same address written plainly"}
+    {"host": "10.0.0.1", "suffix": "", "routes": ["10.0.0.0/8"], "proxy": true, "why": "the same address written plainly"},
+    {"host": "::1%lo0", "suffix": "", "proxy": false, "why": "loopback with a zone, which no range check matches"},
+    {"host": "fe80::1%en0", "suffix": "", "proxy": false, "why": "link-local with a zone"},
+    {"host": "fd7a:115c:a1e0::1%en0", "suffix": "", "proxy": false, "why": "a zone is never part of a tailnet address"},
+    {"host": "::1%", "suffix": "", "proxy": false, "why": "an empty zone"},
+    {"host": "127.foo.ts.net", "suffix": "", "proxy": true, "why": "a numeric first label is still a name"}
   ]
 }

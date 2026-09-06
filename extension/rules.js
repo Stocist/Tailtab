@@ -114,13 +114,14 @@ function tailtabIsTailnetHost(host, tailnetDomain, routes) {
   if (h.charAt(h.length - 1) === ".") h = h.slice(0, -1);
   if (h.charAt(0) === "[" && h.charAt(h.length - 1) === "]") h = h.slice(1, -1);
   if (h === "") return false;
+  if (h.indexOf("%") !== -1) return false; // a zoned address, refused by hostAddr too
 
   // Match netip.Unmap before applying IPv4 rules.
   var mapped = h.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
   if (mapped) h = mapped[1];
 
   // Never proxy the loopback: the proxy itself lives there.
-  if (h === "localhost" || h === "::1" || h.indexOf("127.") === 0) return false;
+  if (h === "localhost" || h === "::1") return false;
   if (h.length > 10 && h.slice(-10) === ".localhost") return false;
 
   var v4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
@@ -130,7 +131,7 @@ function tailtabIsTailnetHost(host, tailnetDomain, routes) {
     var a = parseInt(v4[1], 10);
     var b = parseInt(v4[2], 10);
     if (a === 100 && b >= 64 && b <= 127) return true;
-    // An address inside a subnet a peer routes for the tailnet.
+    if (a === 0 || a === 127 || (a === 169 && b === 254) || a >= 224) return false;
     return tailtabInRoutes(h, routes);
   }
 
@@ -169,6 +170,7 @@ function tailtabExitModeProxies(host, routes) {
   if (h.charAt(h.length - 1) === ".") h = h.slice(0, -1);
   if (h.charAt(0) === "[" && h.charAt(h.length - 1) === "]") h = h.slice(1, -1);
   if (h === "") return false;
+  if (h.indexOf("%") !== -1) return false; // a zoned address, refused by hostAddr too
 
   var mapped = h.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
   if (mapped) h = mapped[1];

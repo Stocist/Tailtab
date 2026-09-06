@@ -70,6 +70,12 @@
     {"host": "::1", "routes": ["::/1"], "proxy": false, "why": "a route covering IPv6 loopback is ignored"},
     {"host": "169.254.169.254", "routes": ["169.254.0.0/16"], "proxy": false, "why": "link-local stays local even when routed (N2)"},
     {"host": "010.0.0.1", "routes": ["10.0.0.0/8"], "proxy": false, "why": "a leading-zero octet is not an address (N1)"},
-    {"host": "8.8.8.8", "routes": ["0.0.0.0/1"], "proxy": true, "why": "public in exit mode regardless of the ignored route"}
+    {"host": "8.8.8.8", "routes": ["0.0.0.0/1"], "proxy": true, "why": "public in exit mode regardless of the ignored route"},
+    {"host": "::1%lo0", "proxy": false, "why": "loopback with a zone, which no range check matches"},
+    {"host": "[::1%lo0]", "proxy": false, "why": "loopback with a zone, bracketed"},
+    {"host": "fe80::1%en0", "proxy": false, "why": "link-local with a zone"},
+    {"host": "fe80::1%eth0", "proxy": false, "why": "link-local with a zone"},
+    {"host": "fd7a:115c:a1e0::1%en0", "proxy": false, "why": "a zone is never part of a tailnet address"},
+    {"host": "::1%", "proxy": false, "why": "an empty zone"}
   ]
 }
