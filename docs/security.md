@@ -27,6 +27,10 @@ While an exit node is selected *and online*, the guard flips to allow any public
 - `nativeMessaging`, `proxy`, `storage`, `tabs`, `alarms`: the host, the proxy configuration, the profile ID, opening the login tab, and the reconnect heartbeat.
 - On Edge only: `webRequest`, `webRequestAuthProvider` and `host_permissions: <all_urls>`. `onAuthRequired` is the only way to answer a proxy's 407 in Manifest V3 and needs all three. The listener answers a challenge only when it comes from a proxy at `127.0.0.1` on the port this host is using, returns nothing for every other challenge, and never reads or modifies request content. Zen needs none of this because Firefox passes SOCKS credentials directly.
 
+## What the popup opens
+
+The login URL comes from the coordination server. The host drops one that is not `https` on the pinned server's host (Tailscale's login host for the default), and the popup opens nothing but `https`. A machine's name is opened only as a bare tailnet host: no credentials, port or path, and it must pass the split-tunnel rule. An account picture loads only over `https` from a public host. The background worker accepts commands only from a port opened by the popup page.
+
 ## Logging
 
 `tsnet` uploads its logs to `log.tailscale.com` and there is no supported way to turn that off: the uploader is built unconditionally and neither documented off-switch applies to `tsnet`. Tailtab does not work around it. The host's own logging goes to stderr and never includes the proxy credential.

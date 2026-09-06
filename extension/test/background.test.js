@@ -29,6 +29,8 @@ function makeEnv(options) {
   const popupMessages = [];
   const chrome = {
     runtime: {
+      id: "tailtab-test",
+      getURL: (p) => "chrome-extension://tailtab-test/" + p,
       lastError: null,
       connectNative() {
         log.connects++;
@@ -106,10 +108,11 @@ function makeEnv(options) {
     ctx: ctx,
     log: log,
     popupMessages: popupMessages,
-    // openPopup connects a popup port, the way clicking the toolbar icon does.
-    openPopup() {
+    // sender defaults to the popup page; pass null or another sender for a stranger.
+    openPopup(sender) {
       const port = {
         name: "popup",
+        sender: sender === undefined ? { id: "tailtab-test", url: "chrome-extension://tailtab-test/popup.html" } : sender,
         onMessage: mkEvent(),
         onDisconnect: mkEvent(),
         postMessage: (m) => popupMessages.push(m),
@@ -169,6 +172,8 @@ function makeFirefoxEnv() {
   let nativePort = null;
   const browserApi = {
     runtime: {
+      id: "tailtab@stocist.dev",
+      getURL: (p) => "moz-extension://tailtab-test/" + p,
       lastError: null,
       connectNative() {
         nativePort = {
@@ -1580,6 +1585,27 @@ test("the installed PAC is mandatory, so a script failure blocks instead of goin
   env.disconnect();
   await flush();
   eq(env.log.lastValue.pacScript.mandatory, true, "parked");
+});
+
+test("a popup port from anywhere but the popup page is ignored", async () => {
+  const env = makeEnv();
+  await flush();
+  env.status({ state: "Running", proxyPort: 64378 });
+  await flush();
+  const before = env.popupMessages.length;
+  const strangers = [
+    null,
+    { id: "tailtab-test", url: "https://example.com/" },
+    { id: "someone-else", url: "chrome-extension://someone-else/popup.html" },
+    { id: "tailtab-test", url: "chrome-extension://tailtab-test/options.html" },
+  ];
+  for (const sender of strangers) env.openPopup(sender).onMessage._fire({ cmd: "logout" });
+  await flush();
+  if (env.log.sent.includes("logout")) throw new Error("a stranger's logout reached the host");
+  eq(env.popupMessages.length, before, "strangers are not answered");
+  env.openPopup().onMessage._fire({ cmd: "status" });
+  await flush();
+  if (env.popupMessages.length <= before) throw new Error("the popup page itself was not answered");
 });
 
 test("a login link that is not https is never opened", () => {

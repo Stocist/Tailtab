@@ -434,10 +434,14 @@ function setStatus(next) {
   pushToPopups();
 }
 
-// ------------------------------------------------------------------ popup wire
+// Only the popup page may drive the host; a content script added later must not.
+function fromPopup(sender) {
+  return !!sender && sender.id === api.runtime.id && typeof sender.url === "string" &&
+    sender.url.split(/[?#]/)[0] === api.runtime.getURL("popup.html");
+}
 
 api.runtime.onConnect.addListener((port) => {
-  if (port.name !== "popup") return;
+  if (port.name !== "popup" || !fromPopup(port.sender)) return;
   popups.add(port);
   port.onDisconnect.addListener(() => popups.delete(port));
   port.onMessage.addListener((msg) => {
