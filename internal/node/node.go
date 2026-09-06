@@ -399,8 +399,6 @@ func (n *Node) watch(ctx context.Context, w *local.IPNBusWatcher) {
 }
 
 func (n *Node) apply(ctx context.Context, notify ipn.Notify) {
-	var wantLogin bool
-
 	changed := n.update(func(st *Status) {
 		if s := notify.InitialStatus; s != nil {
 			applyIPNStatus(st, s)
@@ -440,40 +438,46 @@ func (n *Node) apply(ctx context.Context, notify ipn.Notify) {
 			n.loginRequested = false
 			n.loginRefused = false
 		}
-		wantLogin = st.State == ipn.NeedsLogin.String() && st.AuthURL == "" && !n.loginRequested
 	})
 
 	// These notifications can change routing fields without a state transition;
 	// refresh from the authoritative LocalAPI status.
 	if notify.State != nil || notify.SelfChange != nil || notify.Prefs != nil {
-		n.refresh(ctx)
+		if n.refresh(ctx) {
+			changed = true
+		}
 	}
 
-	// NeedsLogin with no URL in hand means nobody has asked control for one:
-	// this is the case on a first run and again after a logout. Notifications
-	// that changed nothing are ignored, so a quiet stream of prefs and health
-	// updates cannot turn into a stream of login sessions.
-	if changed && wantLogin {
+	// Checked after the refresh: a new profile's prefs arrive before its state,
+	// so the refresh is what first reports NeedsLogin.
+	if changed && n.wantLogin() {
 		if err := n.requestLogin(ctx); err != nil {
 			log.Printf("requesting a login URL: %v", err)
 		}
 	}
 }
 
-// refresh re-reads the node status from the local API.
-func (n *Node) refresh(ctx context.Context) {
+// wantLogin reports whether a logged-out node still needs a login URL.
+func (n *Node) wantLogin() bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.st.State == ipn.NeedsLogin.String() && n.st.AuthURL == "" && !n.loginRequested
+}
+
+// refresh reports whether the status changed.
+func (n *Node) refresh(ctx context.Context) bool {
 	n.mu.Lock()
 	read := n.readStatus
 	n.mu.Unlock()
 	if read == nil {
-		return
+		return false
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	s, err := read(ctx)
 	if err != nil {
 		log.Printf("reading node status: %v", err)
-		return
+		return false
 	}
 	n.mu.Lock()
 	profiles := n.readProfiles
@@ -490,7 +494,7 @@ func (n *Node) refresh(ctx context.Context) {
 		}
 	}
 	var restore string
-	n.update(func(st *Status) {
+	changed := n.update(func(st *Status) {
 		applyIPNStatus(st, s)
 		n.vetAuthURL(st)
 		if haveAccounts {
@@ -517,6 +521,7 @@ func (n *Node) refresh(ctx context.Context) {
 			log.Printf("restoring the exit node %q: %v", restore, err)
 		}
 	}
+	return changed
 }
 
 func accountsFrom(current ipn.LoginProfile, all []ipn.LoginProfile) []Account {

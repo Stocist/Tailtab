@@ -928,3 +928,27 @@ func TestExitNodeFileRefusesAnUnsafeAccountID(t *testing.T) {
 	}
 }
 
+// A new profile's prefs arrive before its state, so the status refresh is what
+// first reports NeedsLogin and the State notification that follows changes
+// nothing.
+func TestLoginIsRequestedWhenARefreshBringsNeedsLogin(t *testing.T) {
+	n, logins, _ := newTestNode(t)
+	ctx := context.Background()
+	backend := ipn.Running.String()
+	n.readStatus = func(context.Context) (*ipnstate.Status, error) {
+		return &ipnstate.Status{BackendState: backend}, nil
+	}
+	n.apply(ctx, state(ipn.Running))
+
+	backend = ipn.NeedsLogin.String()
+	prefs := (&ipn.Prefs{ControlURL: "https://controlplane.tailscale.com"}).View()
+	n.apply(ctx, ipn.Notify{Prefs: &prefs})
+	if *logins != 1 {
+		t.Fatalf("%d login requests after the refresh reported NeedsLogin, want 1", *logins)
+	}
+	n.apply(ctx, state(ipn.NeedsLogin))
+	n.apply(ctx, ipn.Notify{Prefs: &prefs})
+	if *logins != 1 {
+		t.Errorf("%d login requests after the state notification, want still 1", *logins)
+	}
+}

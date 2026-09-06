@@ -1257,6 +1257,10 @@ test("Add account asks the host and shows the login once it arrives", () => {
   ui.clickAddAccount();
   eq(ui.sent[ui.sent.length - 1], { cmd: "addaccount" }, "the command");
   eq(ui.els.accountname.textContent, "Switching…", "header while the host works");
+  // The host reports the new profile first and the URL once control answers.
+  ui.push({ connected: true, status: { state: "NeedsLogin", authURL: "", error: "You are logged out. The last login error was: fetch control key: context canceled", warnings: ["You are logged out. The last login error was: fetch control key: context canceled"], accounts: [] } });
+  eq(ui.opened, [], "nothing to open yet");
+  eq(ui.els.hint.textContent, "Requesting login link…", "the popup keeps waiting for the link");
   ui.push({ connected: true, status: { state: "NeedsLogin", authURL: "https://login.tailscale.com/a/1", warnings: ["You are logged out. The last login error was: fetch control key: context canceled"], accounts: [] } });
   eq(ui.opened, ["https://login.tailscale.com/a/1"], "the login page was opened without another click");
   eq(ui.els.state.textContent, "Not logged in", "pill once the new profile is ready");
@@ -1663,6 +1667,33 @@ test("an avatar loads only over https from a public host", () => {
     eq(ui.els.avatar.children.length, 0, "no picture for " + picture);
     eq(ui.els.avatar.textContent, "A", "the initial stands in for " + picture);
   }
+});
+
+test("Connect while logged out opens the link even when a logged-out warning lands first", () => {
+  const ui = openPopupUI();
+  const needsLogin = (fields) => ui.push({ connected: true, status: Object.assign({ state: "NeedsLogin", authURL: "", warnings: [], accounts: [] }, fields) });
+  needsLogin({});
+  ui.clickToggle();
+  eq(ui.sent[ui.sent.length - 1], { cmd: "up" }, "the command");
+  needsLogin({ error: "You are logged out. The last login error was: fetch control key: context canceled" });
+  eq(ui.opened, [], "nothing to open yet");
+  eq(ui.els.hint.textContent, "Requesting login link…", "still waiting");
+  eq(ui.els.connect.disabled, true, "Connect stays disabled while waiting");
+  needsLogin({ authURL: "https://login.tailscale.com/a/3" });
+  eq(ui.opened, ["https://login.tailscale.com/a/3"], "the link was opened when it arrived");
+});
+
+test("a real error ends the wait for a login link", () => {
+  const ui = openPopupUI();
+  const needsLogin = (fields) => ui.push({ connected: true, status: Object.assign({ state: "NeedsLogin", authURL: "", warnings: [], accounts: [] }, fields) });
+  needsLogin({});
+  ui.clickToggle();
+  needsLogin({ error: "starting interactive login: control is unreachable" });
+  eq(ui.els.hint.textContent, "starting interactive login: control is unreachable", "the error is shown");
+  eq(ui.els.connect.disabled, false, "Connect is offered again");
+  needsLogin({ authURL: "https://login.tailscale.com/a/4" });
+  eq(ui.opened, [], "a link nobody is waiting for is offered, not opened");
+  eq(ui.els.login.hidden, false, "the Log in button is offered");
 });
 
 (async () => {

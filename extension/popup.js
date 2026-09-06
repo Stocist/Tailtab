@@ -18,8 +18,8 @@ let menuOpen = false;
 const BUILD = "__TAILTAB_BUILD__";
 const SWITCH_TIMEOUT_MS = 20000;
 let switchTimer = null;
-// The login URL this popup already opened, so a re-render does not open it
-// twice.
+let loginTimer = null;
+// Status re-renders must not open the same login URL twice.
 let openedLogin = "";
 const MAX_MACHINES = 8;
 const PREVIEW_MACHINES = 3;
@@ -154,6 +154,21 @@ function renderAvatar(active) {
   } else {
     avatar.textContent = letter;
   }
+}
+
+// The host reports NeedsLogin first and the login URL in a later status.
+function awaitLogin() {
+  awaitingLogin = true;
+  if (loginTimer) clearTimeout(loginTimer);
+  loginTimer = setTimeout(() => {
+    loginTimer = null;
+    if (!awaitingLogin) return;
+    awaitingLogin = false;
+    if (latest) {
+      render(latest);
+      setText("hint", "The login link did not arrive. Try again.");
+    }
+  }, SWITCH_TIMEOUT_MS);
 }
 
 function beginSwitch(target) {
@@ -351,7 +366,9 @@ function render(msg) {
     awaitingLogin = false;
     openLogin(st.authURL);
   }
-  if (st.authURL || st.error || running || state === "Starting") {
+  // The wait ends with the URL, the node moving on, or a real error. The stale
+  // logged-out warning lands in between and is not one.
+  if (st.authURL || state !== "NeedsLogin" || (st.error && !/^You are logged out/.test(st.error))) {
     awaitingLogin = false;
   }
   // End switching only on host-confirmed account, login state, or error.
@@ -363,6 +380,7 @@ function render(msg) {
       (active && active.id === switchingTo) ||
       st.error
     ) {
+      if (switchingTo === "new" && state === "NeedsLogin" && !st.authURL) awaitLogin();
       switchingTo = "";
       if (switchTimer) {
         clearTimeout(switchTimer);
@@ -486,9 +504,9 @@ el("toggle").addEventListener("click", () => {
 
 function connect() {
   const st = (latest && latest.status) || {};
-  // Only NeedsLogin waits on control for a URL; from Stopped, up is immediate.
-  awaitingLogin = st.state === "NeedsLogin" && !st.authURL;
-  if (awaitingLogin) {
+  // Only NeedsLogin waits asynchronously for a control-server URL.
+  if (st.state === "NeedsLogin" && !st.authURL) {
+    awaitLogin();
     setText("hint", "Requesting login link…");
     el("connect").disabled = true;
     el("connect").textContent = "Requesting…";
