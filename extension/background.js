@@ -196,7 +196,7 @@ async function applyProxy() {
         scope: "regular",
         value: {
           mode: "pac_script",
-          pacScript: { data: pac, mandatory: false },
+          pacScript: { data: pac, mandatory: true }, // a failing PAC blocks, never falls back to DIRECT
         },
       },
       () => {
@@ -240,7 +240,7 @@ async function parkProxy() {
     return;
   }
   const failure = await new Promise((resolve) =>
-    chrome.proxy.settings.set({ scope: "regular", value: { mode: "pac_script", pacScript: { data: pac, mandatory: false } } }, () => {
+    chrome.proxy.settings.set({ scope: "regular", value: { mode: "pac_script", pacScript: { data: pac, mandatory: true } } }, () => {
       const err = chrome.runtime.lastError;
       resolve(err && err.message ? err.message : "");
     })

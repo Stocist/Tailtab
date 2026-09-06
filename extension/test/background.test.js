@@ -50,6 +50,7 @@ function makeEnv(options) {
         get: (_details, cb) => cb({ levelOfControl: log.levelOfControl || opts.levelOfControl || "controllable_by_this_extension" }),
         set: (details, cb) => {
           log.set.push(pacTarget(details.value));
+          log.lastValue = details.value;
           log.lastPac = (details.value && details.value.pacScript && details.value.pacScript.data) || "";
           if (!cb) return;
           // Chromium exposes rejection only during this callback.
@@ -1564,6 +1565,21 @@ test("a parked configuration does not fight a policy", async () => {
   await flush();
   eq(env.log.set, [], "nothing was installed over the policy");
 });
+
+test("the installed PAC is mandatory, so a script failure blocks instead of going DIRECT", async () => {
+  const env = makeEnv();
+  await flush();
+  env.status(RUNNING);
+  await flush();
+  eq(env.log.lastValue.pacScript.mandatory, true, "split tunnel");
+  env.status(Object.assign({}, RUNNING, { exitNodes: [{ id: "n1", name: "server", online: true }], exitNode: "n1", exitNodeActive: true }));
+  await flush();
+  eq(env.log.lastValue.pacScript.mandatory, true, "exit mode");
+  env.disconnect();
+  await flush();
+  eq(env.log.lastValue.pacScript.mandatory, true, "parked");
+});
+
 (async () => {
   let failed = 0;
   for (const t of tests) {
