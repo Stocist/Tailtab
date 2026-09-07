@@ -362,6 +362,34 @@ func TestExitNodeOffersReachTheStatus(t *testing.T) {
 	}
 }
 
+func TestExitNodeLocationsReachTheStatusAndSortAfterOwnMachines(t *testing.T) {
+	located := func(id, host, country, city string) *ipnstate.PeerStatus {
+		p := exitPeer(id, host, true, true)
+		p.Location = &tailcfg.Location{Country: country, City: city}
+		return p
+	}
+	var st Status
+	applyIPNStatus(&st, &ipnstate.Status{
+		BackendState: ipn.Running.String(),
+		Peer: map[key.NodePublic]*ipnstate.PeerStatus{
+			key.NewNode().Public(): located("nodeid-se", "se-sto-wg-001", "Sweden", "Stockholm"),
+			key.NewNode().Public(): located("nodeid-cz", "cz-prg-wg-001", "Czechia", "Prague"),
+			key.NewNode().Public(): exitPeer("nodeid-server", "server", true, true),
+		},
+	})
+
+	// A hostname like "cz-prg-wg-001" is unreadable on its own, so the country
+	// and city have to survive the trip to the popup.
+	want := []ExitNode{
+		{ID: "nodeid-server", Name: "server", DNSName: "server.tail1a2b3c.ts.net", Online: true, OS: "linux"},
+		{ID: "nodeid-cz", Name: "cz-prg-wg-001", DNSName: "cz-prg-wg-001.tail1a2b3c.ts.net", Online: true, OS: "linux", Country: "Czechia", City: "Prague"},
+		{ID: "nodeid-se", Name: "se-sto-wg-001", DNSName: "se-sto-wg-001.tail1a2b3c.ts.net", Online: true, OS: "linux", Country: "Sweden", City: "Stockholm"},
+	}
+	if !slices.Equal(st.ExitNodes, want) {
+		t.Errorf("ExitNodes = %+v, want %+v", st.ExitNodes, want)
+	}
+}
+
 func TestExitNodeIsActiveOnlyWhenOnline(t *testing.T) {
 	base := func(exit *ipnstate.ExitNodeStatus) *ipnstate.Status {
 		return &ipnstate.Status{

@@ -35,6 +35,10 @@ type ExitNode struct {
 	// Online gates exit routing; offline selections fail closed.
 	Online bool
 	OS     string
+	// Country and City come from the control plane for location-aware exit
+	// nodes such as Mullvad's, whose hostnames are only short codes.
+	Country string
+	City    string
 }
 
 // Account is a Tailscale login profile held by the node.
@@ -679,16 +683,28 @@ func applyExitNodes(st *Status, s *ipnstate.Status) {
 		if name == "" {
 			name = string(p.ID)
 		}
-		nodes = append(nodes, ExitNode{
+		node := ExitNode{
 			ID:      string(p.ID),
 			Name:    name,
 			DNSName: dns,
 			Online:  p.Online,
 			OS:      p.OS,
-		})
+		}
+		if p.Location != nil {
+			node.Country = p.Location.Country
+			node.City = p.Location.City
+		}
+		nodes = append(nodes, node)
 	}
-	// Stabilize map iteration so unchanged snapshots compare equal.
+	// Stabilize map iteration so unchanged snapshots compare equal. Nodes
+	// without a location are the tailnet's own machines and sort first.
 	slices.SortFunc(nodes, func(a, b ExitNode) int {
+		if c := strings.Compare(a.Country, b.Country); c != 0 {
+			return c
+		}
+		if c := strings.Compare(a.City, b.City); c != 0 {
+			return c
+		}
 		if c := strings.Compare(a.Name, b.Name); c != 0 {
 			return c
 		}
