@@ -57,9 +57,32 @@ Chromium gets pointed at the proxy through a PAC script. Firefox decides whether
 
 More detail is in [docs/architecture.md](docs/architecture.md).
 
-## Quick start
+## Install
 
-You will need macOS, Go 1.27, Node 22, and either Microsoft Edge or Zen.
+One command installs the host under your home directory and registers it with the browsers on the machine. No root or admin.
+
+macOS / Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Stocist/Tailtab/main/scripts/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/Stocist/Tailtab/main/scripts/install.ps1 | iex
+```
+
+Both download the [latest release](https://github.com/Stocist/Tailtab/releases/latest), verify it against `SHA256SUMS`, and run `tailtab install`. Set `TAILTAB_VERSION` to pin a release. Then add the extension:
+
+- **Zen / Firefox**: open `tailtab-<version>.xpi` from the release page in the browser. It is signed by Mozilla, installs permanently, and updates itself from later releases.
+- **Edge / Chrome**: unzip `tailtab-chromium-<version>.zip` and load it unpacked from `edge://extensions` or `chrome://extensions` with developer mode on.
+
+The host binary is not notarised or code-signed yet, so macOS may need a right-click **Open** the first time and Windows may show a SmartScreen warning. Linux and Windows hosts pass the same end-to-end smoke test in CI as macOS but have had less real use; reports welcome.
+
+## Build from source
+
+You will need Go 1.27, Node 22, and either Microsoft Edge or Zen.
 
 ```sh
 git clone https://github.com/Stocist/Tailtab.git && cd Tailtab
@@ -155,8 +178,9 @@ It is not in an extension store yet, so setup is still manual.
 - [x] Signed Zen build through AMO
 - [x] Release builds with prebuilt binaries
 - [x] Icons
-- [x] Linux host (built and unit-tested; not yet exercised end to end)
-- [x] Windows host (built and unit-tested; not yet exercised end to end)
+- [x] Linux host (smoke-tested end to end in CI)
+- [x] Windows host (smoke-tested end to end in CI)
+- [x] One-step install scripts
 - [ ] Proper Chrome testing
 - [ ] Proper Firefox testing
 

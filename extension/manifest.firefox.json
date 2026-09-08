@@ -7,6 +7,7 @@
     "gecko": {
       "id": "tailtab@stocist.dev",
       "strict_min_version": "128.0",
+      "update_url": "https://github.com/Stocist/Tailtab/releases/latest/download/updates.json",
       "data_collection_permissions": {
         "required": ["none"]
       }

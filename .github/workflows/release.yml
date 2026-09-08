@@ -75,6 +75,31 @@ jobs:
           mv release/xpi/*.xpi "release/tailtab-${TAILTAB_VERSION}.xpi"
           rmdir release/xpi
 
+      # Firefox polls the manifest's update_url, which is the latest release's
+      # updates.json. Only a signed xpi can be offered, so this follows signing.
+      - name: Firefox update manifest
+        run: |
+          set -euo pipefail
+          xpi="release/tailtab-${TAILTAB_VERSION}.xpi"
+          [ -f "$xpi" ] || { echo "no signed xpi; skipping updates.json"; exit 0; }
+          hash="$(sha256sum "$xpi" | cut -d' ' -f1)"
+          cat > release/updates.json <<JSON
+          {
+            "addons": {
+              "tailtab@stocist.dev": {
+                "updates": [
+                  {
+                    "version": "${TAILTAB_VERSION}",
+                    "update_link": "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/tailtab-${TAILTAB_VERSION}.xpi",
+                    "update_hash": "sha256:${hash}"
+                  }
+                ]
+              }
+            }
+          }
+          JSON
+          cat release/updates.json
+
       - name: Checksums
         run: (cd release && sha256sum * > SHA256SUMS)
 
