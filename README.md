@@ -89,12 +89,11 @@ Edge likes to keep the old background worker around even after the browser resta
 <details>
 <summary><b>Load the extension in Zen / Firefox</b></summary>
 
-1. Open `about:debugging#/runtime/this-firefox`.
-2. Click **Load Temporary Add-on…**.
-3. Select `extension/dist/firefox/manifest.json`.
-4. If you want Tailtab in private windows, enable **Run in Private Windows** from `about:addons`.
+1. Download `tailtab-<version>.xpi` from the [latest release](https://github.com/Stocist/Tailtab/releases/latest). It is signed by Mozilla for self-distribution, so it installs permanently.
+2. Open it in the browser (drag it onto a window, or `File > Open File…`) and accept the install prompt.
+3. If you want Tailtab in private windows, enable **Run in Private Windows** from `about:addons`.
 
-Firefox removes temporary extensions when the browser closes, so you will need to load it again after a restart for now. A signed build is on the roadmap.
+For development, load `extension/dist/firefox/manifest.json` from `about:debugging#/runtime/this-firefox` with **Load Temporary Add-on…** instead. Firefox removes temporary extensions when the browser closes, so that one has to be loaded again after a restart.
 
 </details>
 
@@ -153,7 +152,7 @@ It is not in an extension store yet, so setup is still manual.
 - [x] Exit nodes
 - [x] Account switching
 - [x] Machine search
-- [ ] Signed Zen build through AMO
+- [x] Signed Zen build through AMO
 - [x] Release builds with prebuilt binaries
 - [x] Icons
 - [x] Linux host (built and unit-tested; not yet exercised end to end)
