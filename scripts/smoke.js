@@ -5,8 +5,8 @@
 //   node scripts/smoke.js bin/tailtab
 //
 // Sends `init` for a fresh profile and waits for a status event that carries
-// a proxy port and the NeedsLogin state, which proves tsnet started, the
-// loopback proxy is listening and the coordination server answered.
+// a proxy port and a login URL, which proves tsnet started, the loopback
+// proxy is listening and the coordination server answered.
 "use strict";
 const { spawn } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
@@ -76,15 +76,19 @@ child.stdout.on("data", (chunk) => {
     if (buf.length < 4 + n) return;
     const ev = JSON.parse(buf.subarray(4, 4 + n).toString());
     buf = buf.subarray(4 + n);
-    const { proxyToken, ...shown } = ev; // never print the credential
+    // Never print credentials: the proxy token, or the one-time login link.
+    const { proxyToken, authURL, ...shown } = ev;
+    if (authURL) shown.authURL = "<redacted>";
     console.log("event:", JSON.stringify(shown));
     if (ev.event === "error" && ev.error) {
       finish(1, `FAIL: host reported an error: ${ev.error}`);
       return;
     }
     if (ev.proxyPort > 0) sawProxy = true;
-    if (sawProxy && ev.state === "NeedsLogin") {
-      finish(0, `OK: proxy listening on ${ev.proxyPort}, control plane reached (NeedsLogin)`);
+    // NeedsLogin alone only says there is no node key yet. A login URL is
+    // minted by the coordination server, so it proves the round trip.
+    if (sawProxy && ev.authURL) {
+      finish(0, `OK: proxy listening on ${ev.proxyPort}, control plane issued a login URL`);
       return;
     }
   }
@@ -101,7 +105,7 @@ child.on("exit", (code) => {
 });
 
 const timer = setTimeout(() => {
-  finish(1, `FAIL: no NeedsLogin status within ${timeoutMs} ms (proxy seen: ${sawProxy})`);
+  finish(1, `FAIL: no login URL within ${timeoutMs} ms (proxy seen: ${sawProxy})`);
 }, timeoutMs);
 
 child.stdin.write(frame({ cmd: "init", profileID, browser: "smoke" }));
