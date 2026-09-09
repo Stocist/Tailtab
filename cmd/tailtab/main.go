@@ -19,6 +19,8 @@ Usage:
   tailtab                    run as a native-messaging host (started by the browser)
   tailtab install --edge-id <chromium-extension-id> --gecko-id <addon-id>
                              register the native-messaging manifests
+  tailtab install --chrome-flatpak --edge-id <chromium-extension-id> --extension-dir <directory>
+                             copy the host and built extension into Chrome Flatpak (Linux)
   tailtab uninstall          remove the native-messaging manifests
 
 Anything else on the command line means the browser started us, and we run as a
@@ -84,8 +86,16 @@ func runInstall(args []string) error {
 	fs.SetOutput(os.Stderr)
 	edgeID := fs.String("edge-id", "", "Microsoft Edge extension ID (32 characters, a-p)")
 	geckoID := fs.String("gecko-id", "", "Zen/Firefox add-on ID, e.g. tailtab@stocist.dev")
+	chromeFlatpak := fs.Bool("chrome-flatpak", false, "install only inside Chrome Flatpak on Linux; close Chrome before upgrading")
+	extensionDir := fs.String("extension-dir", "", "built Chromium extension directory for --chrome-flatpak")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if !*chromeFlatpak && *extensionDir != "" {
+		return fmt.Errorf("--extension-dir requires --chrome-flatpak")
+	}
+	if *chromeFlatpak && (*extensionDir == "" || fs.NArg() != 0) {
+		return fmt.Errorf("--chrome-flatpak requires --extension-dir <built Chromium directory> and no positional arguments")
 	}
 
 	home, err := os.UserHomeDir()
@@ -96,17 +106,27 @@ func runInstall(args []string) error {
 	if err != nil {
 		return err
 	}
-	written, err := install.Install(install.Options{
+	opts := install.Options{
 		Home:    home,
 		ExePath: exe,
 		EdgeID:  *edgeID,
 		GeckoID: *geckoID,
-	})
+	}
+	var written []string
+	if *chromeFlatpak {
+		written, err = install.InstallChromeFlatpak(opts, *extensionDir)
+	} else {
+		written, err = install.Install(opts)
+	}
 	for _, p := range written {
 		fmt.Fprintf(os.Stderr, "wrote %s\n", p)
 	}
 	if err != nil {
 		return err
+	}
+	if *chromeFlatpak {
+		fmt.Fprintln(os.Stderr, "Chrome Flatpak: load the copied extension directory above with Load unpacked at chrome://extensions.")
+		return nil
 	}
 	fmt.Fprintf(os.Stderr, "native host %q points at %s\n", install.HostName, exe)
 	return nil
