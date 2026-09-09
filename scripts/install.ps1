@@ -28,18 +28,52 @@ $dir = Join-Path $env:LOCALAPPDATA "tailtab"
 $dest = Join-Path $dir "tailtab.exe"
 
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
-$tmp = Join-Path $dir "$asset.download"
+$tmp = Join-Path $dir "$asset.$([guid]::NewGuid()).download"
+$sumsPath = "$tmp.SHA256SUMS"
+$backupPath = "$tmp.previous"
 
-Write-Host "downloading $base/$asset"
-Invoke-WebRequest -Uri "$base/$asset" -OutFile $tmp -UseBasicParsing
-$sums = (Invoke-WebRequest -Uri "$base/SHA256SUMS" -UseBasicParsing).Content
+try {
+  Write-Host "downloading $base/$asset"
+  Invoke-WebRequest -Uri "$base/$asset" -OutFile $tmp -UseBasicParsing
+  Invoke-WebRequest -Uri "$base/SHA256SUMS" -OutFile $sumsPath -UseBasicParsing
+  $sums = Get-Content -LiteralPath $sumsPath
 
-$want = ($sums -split "`n" | Where-Object { $_ -match "\s$([regex]::Escape($asset))\s*$" } | ForEach-Object { ($_ -split "\s+")[0] })
-if (-not $want) { throw "SHA256SUMS has no entry for $asset" }
-$got = (Get-FileHash -Algorithm SHA256 $tmp).Hash.ToLower()
-if ($got -ne $want.ToLower()) { Remove-Item $tmp; throw "checksum mismatch for ${asset}: got $got, want $want" }
+  $want = ($sums | Where-Object { $_ -match "\s$([regex]::Escape($asset))\s*$" } | ForEach-Object { ($_ -split "\s+")[0] })
+  if (-not $want) { throw "SHA256SUMS has no entry for $asset" }
+  $got = (Get-FileHash -Algorithm SHA256 $tmp).Hash.ToLower()
+  if ($got -ne $want.ToLower()) { throw "checksum mismatch for ${asset}: got $got, want $want" }
 
-Move-Item -Force $tmp $dest
+  if (Get-Process -Name tailtab -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $dest }) {
+    throw "Tailtab is running at '$dest'. Close all browsers and retry; the existing binary has not been changed."
+  }
+  $destinationLock = $null
+  try {
+    if (Test-Path -LiteralPath $dest) {
+      # A write handle refuses mapped executables, including a host started after the check.
+      # Allow reads/deletes for Replace, but block new executable mappings during the swap.
+      $destinationLock = [System.IO.File]::Open($dest, [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::Write, ([System.IO.FileShare]::Read -bor [System.IO.FileShare]::Delete))
+      [System.IO.File]::Replace($tmp, $dest, $backupPath)
+    } else {
+      [System.IO.File]::Move($tmp, $dest)
+    }
+  } catch {
+    $replacementError = $_.Exception.Message
+    if (Test-Path -LiteralPath $backupPath) {
+      # Replace can fail after renaming the original; never overwrite a concurrent winner.
+      try { [System.IO.File]::Move($backupPath, $dest) } catch {
+        throw "Could not replace '$dest'. Close all browsers and retry. The previous binary is preserved at '$backupPath'. $replacementError"
+      }
+    }
+    throw "Could not replace '$dest'. Close all browsers and retry; the destination may be locked. $replacementError"
+  } finally {
+    if ($destinationLock) { $destinationLock.Dispose() }
+  }
+  Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+} finally {
+  Remove-Item -LiteralPath $tmp, $sumsPath -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host "installed $dest"
 & $dest install --edge-id $edgeId --gecko-id $geckoId
 if ($LASTEXITCODE -ne 0) { throw "tailtab install failed with exit code $LASTEXITCODE" }

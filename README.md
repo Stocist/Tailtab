@@ -73,6 +73,8 @@ Windows (PowerShell):
 irm https://raw.githubusercontent.com/Stocist/Tailtab/main/scripts/install.ps1 | iex
 ```
 
+When upgrading on Windows, close all browsers that use Tailtab before rerunning the installer. It refuses to replace a running host rather than stopping your browser connections.
+
 Both download the [latest release](https://github.com/Stocist/Tailtab/releases/latest), verify it against `SHA256SUMS`, and run `tailtab install`. Set `TAILTAB_VERSION` to pin a release. Then add the extension:
 
 - **Zen / Firefox**: open `tailtab-<version>.xpi` from the release page in the browser. It is signed by Mozilla, installs permanently, and updates itself from later releases.
