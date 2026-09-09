@@ -17,9 +17,10 @@ const usage = `tailtab is the native host for the tailtab browser extension.
 
 Usage:
   tailtab                    run as a native-messaging host (started by the browser)
-  tailtab install --edge-id <chromium-extension-id> --gecko-id <addon-id>
-                             register the native-messaging manifests
-  tailtab install --chrome-flatpak --edge-id <chromium-extension-id> --extension-dir <directory>
+  tailtab install            register the native-messaging manifests for the
+                             released extension (override the IDs with
+                             --edge-id and --gecko-id for a custom build)
+  tailtab install --chrome-flatpak --extension-dir <directory>
                              copy the host and built extension into Chrome Flatpak (Linux)
   tailtab uninstall          remove the native-messaging manifests
 
@@ -84,8 +85,8 @@ func main() {
 func runInstall(args []string) error {
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	edgeID := fs.String("edge-id", "", "Microsoft Edge extension ID (32 characters, a-p)")
-	geckoID := fs.String("gecko-id", "", "Zen/Firefox add-on ID, e.g. tailtab@stocist.dev")
+	edgeID := fs.String("edge-id", install.DefaultEdgeID, "Chromium extension ID (32 characters, a-p)")
+	geckoID := fs.String("gecko-id", install.DefaultGeckoID, "Zen/Firefox add-on ID")
 	chromeFlatpak := fs.Bool("chrome-flatpak", false, "install only inside Chrome Flatpak on Linux; close Chrome before upgrading")
 	extensionDir := fs.String("extension-dir", "", "built Chromium extension directory for --chrome-flatpak")
 	if err := fs.Parse(args); err != nil {

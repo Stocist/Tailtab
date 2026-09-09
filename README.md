@@ -91,7 +91,7 @@ You will need Go 1.27, Node 22, and either Microsoft Edge or Zen.
 ```sh
 git clone https://github.com/Stocist/Tailtab.git && cd Tailtab
 ./scripts/build.sh
-bin/tailtab install --edge-id kejfineblfbjfolkgjkancapnpknomod --gecko-id tailtab@stocist.dev
+bin/tailtab install
 ```
 
 `build.sh` builds the host binary and an unpacked extension for each browser.

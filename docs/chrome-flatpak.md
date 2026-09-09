@@ -8,9 +8,7 @@ Install and launch Chrome Flatpak once so `~/.var/app/com.google.Chrome/` exists
 
 ```sh
 CGO_ENABLED=0 ./scripts/build.sh
-bin/tailtab install --chrome-flatpak \
-  --edge-id kejfineblfbjfolkgjkancapnpknomod \
-  --extension-dir extension/dist/chromium
+bin/tailtab install --chrome-flatpak --extension-dir extension/dist/chromium
 ```
 
 Building requires Go 1.27 and Node 22. `CGO_ENABLED=0` avoids depending on the host distribution's C library inside the Flatpak runtime. The regular download installer remains native-browser-only; this command requires a host build that includes `--chrome-flatpak` and a built Chromium bundle, not `extension/` or the Firefox bundle.

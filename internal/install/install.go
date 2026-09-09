@@ -29,6 +29,13 @@ var (
 // ValidChromiumID reports whether id is a Chromium extension ID.
 func ValidChromiumID(id string) bool { return chromiumIDRE.MatchString(id) }
 
+// The released extension's IDs. The Chromium one is fixed by the key in
+// extension/manifest.chromium.json, so it is the same in every browser.
+const (
+	DefaultEdgeID  = "kejfineblfbjfolkgjkancapnpknomod"
+	DefaultGeckoID = "tailtab@stocist.dev"
+)
+
 // ValidGeckoID reports whether id is a Firefox/Zen add-on ID.
 func ValidGeckoID(id string) bool {
 	return geckoIDRE.MatchString(id) || geckoUUIDRE.MatchString(id)
