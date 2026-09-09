@@ -82,6 +82,8 @@ Both download the [latest release](https://github.com/Stocist/Tailtab/releases/l
 
 The host binary is not notarised or code-signed yet, so macOS may need a right-click **Open** the first time and Windows may show a SmartScreen warning. Linux and Windows hosts pass the same end-to-end smoke test in CI as macOS but have had less real use; reports welcome.
 
+**Chrome Flatpak on Linux** needs both artifacts inside its sandbox. Use the opt-in [Chrome Flatpak installation](docs/chrome-flatpak.md), not the native-browser one-liner above.
+
 ## Build from source
 
 You will need Go 1.27, Node 22, and either Microsoft Edge or Zen.
@@ -188,6 +190,8 @@ It is not in an extension store yet, so setup is still manual.
 
 Chrome and Firefox should work with the existing implementations, but I have not properly tested them yet.
 
+Chrome Flatpak on Bazzite has a [contributor-tested setup](docs/chrome-flatpak.md); this is not comprehensive browser coverage.
+
 Known limitations and security gaps are tracked in [docs/security.md#known-gaps](docs/security.md#known-gaps).
 
 ## Development
@@ -208,6 +212,8 @@ The host can also be driven manually. Native messaging is just 4-byte little-end
 The original idea and native-messaging structure are based on Tailscale's own [ts-browser-ext](https://github.com/tailscale/ts-browser-ext) experiment. Two files adapt code from it under the same BSD-3-Clause licence.
 
 [tailchrome](https://github.com/dantraynor/tailchrome) takes a similar approach and was also useful to look through while building this.
+
+Thanks to [@Hajfi](https://github.com/Hajfi) for reporting the Chrome Flatpak installation gap and documenting a working sandbox-compatible layout in [#2](https://github.com/Stocist/Tailtab/issues/2).
 
 ## License
 
