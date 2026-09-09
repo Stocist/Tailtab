@@ -52,6 +52,9 @@ function runningStateLine(msg, st) {
   if (st.exitNode) {
     if (!st.exitNodeActive) return "Connected, exit node offline — browsing blocked";
     const chosen = (st.exitNodes || []).find((n) => n.id === st.exitNode);
+    if (chosen && chosen.country && chosen.city) {
+      return "Connected via " + chosen.country + " — " + chosen.city;
+    }
     return "Connected via " + ((chosen && chosen.name) || "exit node");
   }
   return "Connected";
@@ -219,13 +222,40 @@ function renderExitNodes(msg, st, running) {
   none.value = "";
   none.textContent = "None";
   select.appendChild(none);
+
+  // Providers like Mullvad name their nodes "cz-prg-wg-001", so group by
+  // country and label by city. Cities served by several nodes keep the name.
+  const perCity = new Map();
+  for (const node of nodes) {
+    if (!node.country) continue;
+    const key = node.country + "/" + node.city;
+    perCity.set(key, (perCity.get(key) || 0) + 1);
+  }
+  const groups = new Map();
   for (const node of nodes) {
     const option = document.createElement("option");
     option.value = node.id;
-    option.textContent = node.online ? node.name : node.name + " (offline)";
+    let label = node.name;
+    if (node.country && node.city) {
+      label = perCity.get(node.country + "/" + node.city) > 1
+        ? node.city + " (" + node.name + ")"
+        : node.city;
+    }
+    option.textContent = node.online ? label : label + " (offline)";
     // Keep the selected offline node visible, but prevent selecting a new one.
     option.disabled = !node.online && node.id !== st.exitNode;
-    select.appendChild(option);
+    if (!node.country) {
+      select.appendChild(option);
+      continue;
+    }
+    let group = groups.get(node.country);
+    if (!group) {
+      group = document.createElement("optgroup");
+      group.label = node.country;
+      groups.set(node.country, group);
+      select.appendChild(group);
+    }
+    group.appendChild(option);
   }
   select.value = st.exitNode || "";
   select.disabled = !msg.connected;

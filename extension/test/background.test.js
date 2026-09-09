@@ -520,6 +520,11 @@ function openPopupUI() {
     exitOptions: () => els.exitnode.children.map((c) => ({
       value: c.value, label: c.textContent, disabled: c.disabled,
     })),
+    // Located nodes sit in optgroups; only those carry a label.
+    exitGroups: () => els.exitnode.children.filter((c) => c.label !== undefined).map((g) => ({
+      country: g.label,
+      options: g.children.map((c) => ({ value: c.value, label: c.textContent })),
+    })),
     chooseExitNode(id) {
       els.exitnode.value = id;
       if (!els.exitnode.listeners.change) throw new Error("the picker has no change listener");
@@ -1119,6 +1124,40 @@ test("the popup lists the exit nodes and says which one carries the traffic", ()
     { value: "nodeid-server", label: "server", disabled: false },
   ], "the options");
   eq(ui.els.exitnode.value, "nodeid-server", "the selection shown");
+});
+
+test("located exit nodes are grouped by country and labelled by city", () => {
+  const ui = openPopupUI();
+  ui.push({
+    connected: true,
+    status: Object.assign({ warnings: [] }, EXIT_RUNNING, {
+      state: "Running",
+      exitNode: "nodeid-sto",
+      exitNodes: [
+        { id: "nodeid-server", name: "server", online: true, os: "linux" },
+        { id: "nodeid-prg1", name: "cz-prg-wg-001", online: true, os: "linux", country: "Czechia", city: "Prague" },
+        { id: "nodeid-prg2", name: "cz-prg-wg-002", online: true, os: "linux", country: "Czechia", city: "Prague" },
+        { id: "nodeid-sto", name: "se-sto-wg-001", online: true, os: "linux", country: "Sweden", city: "Stockholm" },
+      ],
+    }),
+  });
+
+  eq(ui.els.state.textContent, "Connected via Sweden — Stockholm", "state line");
+  eq(ui.exitOptions().filter((o) => o.label), [
+    { value: "", label: "None", disabled: false },
+    { value: "nodeid-server", label: "server", disabled: false },
+  ], "the tailnet's own machines stay ungrouped");
+  eq(ui.exitGroups(), [
+    {
+      country: "Czechia",
+      options: [
+        // One city, two nodes: the hostname is the only thing telling them apart.
+        { value: "nodeid-prg1", label: "Prague (cz-prg-wg-001)" },
+        { value: "nodeid-prg2", label: "Prague (cz-prg-wg-002)" },
+      ],
+    },
+    { country: "Sweden", options: [{ value: "nodeid-sto", label: "Stockholm" }] },
+  ], "the grouped options");
 });
 
 test("the popup says browsing is blocked when the exit node is offline", () => {

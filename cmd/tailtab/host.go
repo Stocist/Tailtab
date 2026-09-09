@@ -89,6 +89,8 @@ func (b *nodeBackend) Status() *nm.Event {
 			DNSName: n.DNSName,
 			Online:  n.Online,
 			OS:      n.OS,
+			Country: n.Country,
+			City:    n.City,
 		})
 	}
 	for _, a := range st.Accounts {

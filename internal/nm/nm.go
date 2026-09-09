@@ -83,6 +83,8 @@ type ExitNode struct {
 	DNSName string `json:"dnsName,omitempty"`
 	Online  bool   `json:"online"`
 	OS      string `json:"os,omitempty"`
+	Country string `json:"country,omitempty"`
+	City    string `json:"city,omitempty"`
 }
 
 // Event is a status or error message sent to the browser extension.
