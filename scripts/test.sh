@@ -15,3 +15,12 @@ echo "== go test =="
 
 echo "== extension =="
 "$node" extension/test/background.test.js
+
+echo "== distribution scripts =="
+"$node" --test scripts/test/smoke.test.js
+
+if [ "${OS:-}" = Windows_NT ]; then
+  powershell -NoProfile -File scripts/test/install.test.ps1
+else
+  "$node" --test scripts/test/release.test.js
+fi

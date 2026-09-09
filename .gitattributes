@@ -1,0 +1,3 @@
+# Windows checkouts must not convert to CRLF: gofmt, sed in build.sh and the
+# shipped extension files all assume LF.
+* text=auto eol=lf

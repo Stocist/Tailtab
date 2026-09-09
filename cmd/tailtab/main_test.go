@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -56,6 +57,9 @@ func TestBrowserArgvEntersHostMode(t *testing.T) {
 		t.Skip("no go toolchain on PATH")
 	}
 	exe := filepath.Join(t.TempDir(), "tailtab")
+	if runtime.GOOS == "windows" {
+		exe += ".exe"
+	}
 	if out, err := exec.Command(goBin, "build", "-o", exe, ".").CombinedOutput(); err != nil {
 		t.Fatalf("building the host: %v\n%s", err, out)
 	}

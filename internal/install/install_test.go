@@ -98,7 +98,7 @@ func TestInstallAndUninstall(t *testing.T) {
 	opts := Options{
 		GOOS:    "darwin",
 		Home:    home,
-		ExePath: filepath.Join(home, "bin", "tailtab"),
+		ExePath: "/opt/tailtab", // a darwin path, whatever the test host
 		EdgeID:  "abcdefghijklmnopabcdefghijklmnop",
 		GeckoID: "tailtab@stocist.dev",
 	}
