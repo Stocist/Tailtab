@@ -63,8 +63,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$AMO_JWT_ISSUER" ] || [ -z "$AMO_JWT_SECRET" ]; then
-            echo "AMO secrets not set; skipping signing (the unsigned zip is still attached)."
-            exit 0
+            echo "AMO_JWT_ISSUER and AMO_JWT_SECRET are required for Firefox signing." >&2
+            exit 1
           fi
           npx --yes web-ext@8 sign \
             --source-dir extension/dist/firefox \
@@ -81,7 +81,7 @@ jobs:
         run: |
           set -euo pipefail
           xpi="release/tailtab-${TAILTAB_VERSION}.xpi"
-          [ -f "$xpi" ] || { echo "no signed xpi; skipping updates.json"; exit 0; }
+          [ -s "$xpi" ] || { echo "Missing or empty signed XPI: $xpi" >&2; exit 1; }
           hash="$(sha256sum "$xpi" | cut -d' ' -f1)"
           cat > release/updates.json <<JSON
           {
@@ -121,6 +121,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          [ -s release/updates.json ] || { echo "Firefox updates.json is required before publishing." >&2; exit 1; }
           gh release create "${GITHUB_REF_NAME}" release/* \
             --title "Tailtab ${TAILTAB_VERSION}" \
             --notes-file release-notes.md \
