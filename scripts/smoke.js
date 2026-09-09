@@ -13,6 +13,7 @@ const { randomUUID } = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const readline = require("node:readline");
 
 const bin = process.argv[2];
 if (!bin) {
@@ -47,39 +48,61 @@ function frame(obj) {
 // The manifest path and add-on id are what a Gecko browser passes; any
 // arguments keep the binary in host mode.
 const child = spawn(path.resolve(bin), ["smoke-test", "tailtab@stocist.dev"], {
-  stdio: ["pipe", "pipe", "inherit"],
+  stdio: ["pipe", "pipe", "pipe"],
 });
 
 let buf = Buffer.alloc(0);
 let sawProxy = false;
 let done = false;
+let kill = null;
+
+function redact(text) {
+  return text.replace(/https?:\/\/[^\s"<>]+/gi, "<redacted URL>");
+}
+
+// tsnet also logs login URLs to stderr. Redact whole lines, not stream chunks,
+// because a URL can span multiple chunks or end without a trailing newline.
+readline.createInterface({ input: child.stderr, crlfDelay: Infinity })
+  .on("line", (line) => console.error(redact(line)));
 
 function finish(code, msg) {
   if (done) return;
   done = true;
-  console.log(msg);
+  process.exitCode = code;
+  console.log(redact(msg));
   clearTimeout(timer);
   child.stdin.end(); // the browser closing the port is the host's normal exit
-  const kill = setTimeout(() => child.kill(), 5000);
-  child.on("exit", (exit) => {
-    clearTimeout(kill);
-    console.log(`host exited with ${exit}`);
-    fs.rmSync(stateDir(), { recursive: true, force: true });
-    process.exitCode = code || (exit === 0 ? 0 : 1);
-  });
+  if (child.pid && child.exitCode === null && child.signalCode === null) {
+    kill = setTimeout(() => {
+      process.exitCode = 1;
+      child.kill("SIGKILL");
+    }, 5000);
+  }
 }
 
 child.stdout.on("data", (chunk) => {
+  if (done) return;
   buf = Buffer.concat([buf, chunk]);
   while (buf.length >= 4) {
     const n = buf.readUInt32LE(0);
+    if (n > (1 << 20)) {
+      finish(1, "FAIL: host message exceeds the native-messaging limit");
+      return;
+    }
     if (buf.length < 4 + n) return;
-    const ev = JSON.parse(buf.subarray(4, 4 + n).toString());
+    let ev;
+    try {
+      ev = JSON.parse(buf.subarray(4, 4 + n).toString());
+      if (!ev || typeof ev !== "object" || Array.isArray(ev)) throw new Error();
+    } catch {
+      finish(1, "FAIL: invalid native-messaging event from host");
+      return;
+    }
     buf = buf.subarray(4 + n);
     // Never print credentials: the proxy token, or the one-time login link.
     const { proxyToken, authURL, ...shown } = ev;
     if (authURL) shown.authURL = "<redacted>";
-    console.log("event:", JSON.stringify(shown));
+    console.log("event:", redact(JSON.stringify(shown)));
     if (ev.event === "error" && ev.error) {
       finish(1, `FAIL: host reported an error: ${ev.error}`);
       return;
@@ -95,11 +118,17 @@ child.stdout.on("data", (chunk) => {
 });
 
 child.on("error", (err) => finish(1, `FAIL: could not start host: ${err}`));
-child.on("exit", (code) => {
-  if (!done) {
-    done = true;
-    console.log(`FAIL: host exited early with ${code}`);
-    clearTimeout(timer);
+child.stdin.on("error", (err) => finish(1, `FAIL: could not send to host: ${err}`));
+// close also fires after a failed spawn, and waits for both output streams.
+child.on("close", (code) => {
+  if (!done) finish(1, `FAIL: host exited early with ${code}`);
+  clearTimeout(kill);
+  console.log(`host exited with ${code}`);
+  process.exitCode = process.exitCode || (code === 0 ? 0 : 1);
+  try {
+    fs.rmSync(stateDir(), { recursive: true, force: true });
+  } catch (err) {
+    console.error(redact(`FAIL: could not remove smoke-test state: ${err}`));
     process.exitCode = 1;
   }
 });
