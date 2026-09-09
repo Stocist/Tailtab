@@ -45,6 +45,18 @@ jobs:
       - name: extension tests
         run: node extension/test/background.test.js
 
+      - name: smoke-script regression tests
+        run: node --test scripts/test/smoke.test.js
+
+      - name: release workflow regression tests
+        if: runner.os != 'Windows'
+        run: node --test scripts/test/release.test.js
+
+      - name: Windows installer regression tests (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/test/install.test.ps1
+
       - name: build
         run: OUT="bin/tailtab${{ runner.os == 'Windows' && '.exe' || '' }}" ./scripts/build.sh
 
