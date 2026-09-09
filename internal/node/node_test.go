@@ -218,7 +218,7 @@ func TestStateDirIsPerProfile(t *testing.T) {
 	if a == b {
 		t.Fatal("two profiles resolved to one state directory; tsnet does not lock it")
 	}
-	if !strings.HasSuffix(a, "tailtab/0f8fad5b-d9cb-469f-a165-70867728950e") {
+	if !strings.HasSuffix(a, filepath.Join("tailtab", "0f8fad5b-d9cb-469f-a165-70867728950e")) {
 		t.Errorf("StateDir = %q, want it under tailtab/<profile>", a)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 )
 
 // HostName is the native-messaging host name the extension connects to.
@@ -136,7 +137,9 @@ func isAbs(goos, p string) bool {
 	if goos == "windows" {
 		return windowsAbsRE.MatchString(p)
 	}
-	return filepath.IsAbs(p)
+	// Not filepath.IsAbs: that answers for the build host, and the tests run
+	// the darwin and linux layouts on Windows too.
+	return strings.HasPrefix(p, "/")
 }
 
 // Targets validates opts and returns targets without touching the filesystem.

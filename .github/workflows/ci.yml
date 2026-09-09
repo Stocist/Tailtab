@@ -12,10 +12,13 @@ jobs:
   test:
     name: Host and extension tests
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -42,5 +45,23 @@ jobs:
       - name: extension tests
         run: node extension/test/background.test.js
 
+      - name: smoke-script regression tests
+        run: node --test scripts/test/smoke.test.js
+
+      - name: release workflow regression tests
+        if: runner.os != 'Windows'
+        run: node --test scripts/test/release.test.js
+
+      - name: Windows installer regression tests (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/test/install.test.ps1
+
       - name: build
-        run: ./scripts/build.sh
+        run: OUT="bin/tailtab${{ runner.os == 'Windows' && '.exe' || '' }}" ./scripts/build.sh
+
+      # Drives the built host over native messaging like a browser would:
+      # tsnet must start, the loopback proxy must listen, and the coordination
+      # server must answer. This is the end-to-end check for each OS.
+      - name: host smoke test
+        run: node scripts/smoke.js "bin/tailtab${{ runner.os == 'Windows' && '.exe' || '' }}"

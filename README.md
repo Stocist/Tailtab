@@ -57,9 +57,34 @@ Chromium gets pointed at the proxy through a PAC script. Firefox decides whether
 
 More detail is in [docs/architecture.md](docs/architecture.md).
 
-## Quick start
+## Install
 
-You will need macOS, Go 1.27, Node 22, and either Microsoft Edge or Zen.
+One command installs the host under your home directory and registers it with the browsers on the machine. No root or admin.
+
+macOS / Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Stocist/Tailtab/main/scripts/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/Stocist/Tailtab/main/scripts/install.ps1 | iex
+```
+
+When upgrading on Windows, close all browsers that use Tailtab before rerunning the installer. It refuses to replace a running host rather than stopping your browser connections.
+
+Both download the [latest release](https://github.com/Stocist/Tailtab/releases/latest), verify it against `SHA256SUMS`, and run `tailtab install`. Set `TAILTAB_VERSION` to pin a release. Then add the extension:
+
+- **Zen / Firefox**: open `tailtab-<version>.xpi` from the release page in the browser. It is signed by Mozilla, installs permanently, and updates itself from later releases.
+- **Edge / Chrome**: unzip `tailtab-chromium-<version>.zip` and load it unpacked from `edge://extensions` or `chrome://extensions` with developer mode on.
+
+The host binary is not notarised or code-signed yet, so macOS may need a right-click **Open** the first time and Windows may show a SmartScreen warning. Linux and Windows hosts pass the same end-to-end smoke test in CI as macOS but have had less real use; reports welcome.
+
+## Build from source
+
+You will need Go 1.27, Node 22, and either Microsoft Edge or Zen.
 
 ```sh
 git clone https://github.com/Stocist/Tailtab.git && cd Tailtab
@@ -89,12 +114,11 @@ Edge likes to keep the old background worker around even after the browser resta
 <details>
 <summary><b>Load the extension in Zen / Firefox</b></summary>
 
-1. Open `about:debugging#/runtime/this-firefox`.
-2. Click **Load Temporary Add-on…**.
-3. Select `extension/dist/firefox/manifest.json`.
-4. If you want Tailtab in private windows, enable **Run in Private Windows** from `about:addons`.
+1. Download `tailtab-<version>.xpi` from the [latest release](https://github.com/Stocist/Tailtab/releases/latest). It is signed by Mozilla for self-distribution, so it installs permanently.
+2. Open it in the browser (drag it onto a window, or `File > Open File…`) and accept the install prompt.
+3. If you want Tailtab in private windows, enable **Run in Private Windows** from `about:addons`.
 
-Firefox removes temporary extensions when the browser closes, so you will need to load it again after a restart for now. A signed build is on the roadmap.
+For development, load `extension/dist/firefox/manifest.json` from `about:debugging#/runtime/this-firefox` with **Load Temporary Add-on…** instead. Firefox removes temporary extensions when the browser closes, so that one has to be loaded again after a restart.
 
 </details>
 
@@ -153,11 +177,12 @@ It is not in an extension store yet, so setup is still manual.
 - [x] Exit nodes
 - [x] Account switching
 - [x] Machine search
-- [ ] Signed Zen build through AMO
+- [x] Signed Zen build through AMO
 - [x] Release builds with prebuilt binaries
 - [x] Icons
-- [x] Linux host (built and unit-tested; not yet exercised end to end)
-- [x] Windows host (built and unit-tested; not yet exercised end to end)
+- [x] Linux host (smoke-tested end to end in CI)
+- [x] Windows host (smoke-tested end to end in CI)
+- [x] One-step install scripts
 - [ ] Proper Chrome testing
 - [ ] Proper Firefox testing
 
