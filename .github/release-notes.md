@@ -20,7 +20,7 @@ Both verify the download against `SHA256SUMS` and run `tailtab install`. Manual 
 chmod +x tailtab-darwin-arm64
 xattr -d com.apple.quarantine tailtab-darwin-arm64   # the binary is not notarised yet
 mkdir -p ~/.local/bin && mv tailtab-darwin-arm64 ~/.local/bin/tailtab
-~/.local/bin/tailtab install --edge-id kejfineblfbjfolkgjkancapnpknomod --gecko-id tailtab@stocist.dev
+~/.local/bin/tailtab install
 ```
 
 Or build from source with `./scripts/build.sh`, which needs no quarantine step.

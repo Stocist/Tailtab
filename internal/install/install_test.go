@@ -276,3 +276,13 @@ func TestLinuxInstallWritesOnlySupportedBrowsersByDefault(t *testing.T) {
 		t.Fatalf("removed %v, want both", removed)
 	}
 }
+
+func TestDefaultIDsAreValid(t *testing.T) {
+	// `tailtab install` with no flags must register the released extension.
+	if !ValidChromiumID(DefaultEdgeID) {
+		t.Errorf("DefaultEdgeID %q fails ValidChromiumID", DefaultEdgeID)
+	}
+	if !ValidGeckoID(DefaultGeckoID) {
+		t.Errorf("DefaultGeckoID %q fails ValidGeckoID", DefaultGeckoID)
+	}
+}
