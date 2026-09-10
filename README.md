@@ -4,7 +4,7 @@
 <h1 align="center">Tailtab</h1>
 
 <p align="center">
-  A Tailscale node for each browser profile. No system-wide VPN, no root, and different profiles can sit on completely different tailnets at the same time.
+  A Tailscale node for each browser profile. Different profiles can sit on completely different tailnets at the same time.
 </p>
 
 <p align="center">
