@@ -12,8 +12,8 @@
   <a href="LICENSE"><img alt="License: BSD-3-Clause" src="https://img.shields.io/badge/license-BSD--3--Clause-8085b3"></a>
   <img alt="Go 1.27" src="https://img.shields.io/badge/go-1.27-00a378">
   <img alt="tailscale.com v1.102.3" src="https://img.shields.io/badge/tailscale.com-v1.102.3-00a378">
-  <img alt="Platform: macOS · Edge · Zen" src="https://img.shields.io/badge/platform-macOS%20%C2%B7%20Edge%20%C2%B7%20Zen-595f72">
-  <img alt="Status: experimental" src="https://img.shields.io/badge/status-experimental-ee7b30">
+  <img alt="Platform: macOS · Windows · Edge · Zen" src="https://img.shields.io/badge/platform-macOS%20%C2%B7%20Windows%20%C2%B7%20Edge%20%C2%B7%20Zen-595f72">
+  <img alt="Status: beta" src="https://img.shields.io/badge/status-beta-ee7b30">
 </p>
 
 <p align="center">
@@ -169,7 +169,7 @@ There is a more complete write-up in [docs/security.md](docs/security.md), but t
 
 ## Status
 
-Tailtab is still experimental, but it is at the point where I can actually daily drive it on macOS with Edge and Zen.
+Tailtab is in beta. I daily drive it on macOS with Edge and Zen.
 
 It is not in an extension store yet, so setup is still manual.
 
@@ -183,12 +183,12 @@ It is not in an extension store yet, so setup is still manual.
 - [x] Release builds with prebuilt binaries
 - [x] Icons
 - [x] Linux host (smoke-tested end to end in CI)
-- [x] Windows host (smoke-tested end to end in CI)
+- [x] Windows host tested
 - [x] One-step install scripts
 - [ ] Proper Chrome testing
-- [ ] Proper Firefox testing
+- [x] Firefox host tested
 
-Chrome and Firefox should work with the existing implementations, but I have not properly tested them yet.
+Chrome should work with the existing implementation, but I have not properly tested it yet.
 
 Chrome Flatpak on Bazzite has a [contributor-tested setup](docs/chrome-flatpak.md); this is not comprehensive browser coverage.
 
