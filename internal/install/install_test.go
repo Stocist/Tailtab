@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -284,5 +285,33 @@ func TestDefaultIDsAreValid(t *testing.T) {
 	}
 	if !ValidGeckoID(DefaultGeckoID) {
 		t.Errorf("DefaultGeckoID %q fails ValidGeckoID", DefaultGeckoID)
+	}
+}
+
+func TestReleasedIDAllowsTheChromeStoreCopy(t *testing.T) {
+	if !ValidChromiumID(ChromeStoreID) {
+		t.Fatalf("ChromeStoreID %q fails ValidChromiumID", ChromeStoreID)
+	}
+	origins := func(edgeID string) []string {
+		t.Helper()
+		targets, err := Targets(Options{GOOS: "darwin", Home: "/home/u", ExePath: "/opt/tailtab", EdgeID: edgeID, GeckoID: DefaultGeckoID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, target := range targets {
+			if len(target.manifest.AllowedOrigins) != 0 {
+				return target.manifest.AllowedOrigins
+			}
+		}
+		t.Fatal("no Chromium target")
+		return nil
+	}
+	want := []string{"chrome-extension://" + DefaultEdgeID + "/", "chrome-extension://" + ChromeStoreID + "/"}
+	if got := origins(DefaultEdgeID); !slices.Equal(got, want) {
+		t.Errorf("released allowed_origins = %v, want %v", got, want)
+	}
+	custom := "abcdefghijklmnopabcdefghijklmnop"
+	if got := origins(custom); !slices.Equal(got, []string{"chrome-extension://" + custom + "/"}) {
+		t.Errorf("custom allowed_origins = %v, want only the custom ID", got)
 	}
 }

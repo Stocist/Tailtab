@@ -34,6 +34,8 @@ func ValidChromiumID(id string) bool { return chromiumIDRE.MatchString(id) }
 const (
 	DefaultEdgeID  = "kejfineblfbjfolkgjkancapnpknomod"
 	DefaultGeckoID = "tailtab@stocist.dev"
+	// The Chrome Web Store assigns its own ID and refuses the manifest key.
+	ChromeStoreID = "imfnmecfhbbgjbfnkdplclbofbkmihdp"
 )
 
 // ValidGeckoID reports whether id is a Firefox/Zen add-on ID.
@@ -169,12 +171,17 @@ func Targets(opts Options) ([]Target, error) {
 		return nil, fmt.Errorf("tailtab has no installer for %s", goos)
 	}
 
+	origins := []string{"chrome-extension://" + opts.EdgeID + "/"}
+	// A custom --edge-id is a custom build, which the store copy is not.
+	if opts.EdgeID == DefaultEdgeID {
+		origins = append(origins, "chrome-extension://"+ChromeStoreID+"/")
+	}
 	chromium := manifest{
 		Name:           HostName,
 		Description:    description,
 		Path:           opts.ExePath,
 		Type:           "stdio",
-		AllowedOrigins: []string{"chrome-extension://" + opts.EdgeID + "/"},
+		AllowedOrigins: origins,
 	}
 	gecko := manifest{
 		Name:              HostName,
