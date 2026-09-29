@@ -283,6 +283,14 @@ async function dropStaleProxy() {
   await parkProxy();
 }
 
+// Browsers report a host that is absent, or that refuses this copy, only as text.
+let hostProblem = "";
+function hostProblemFrom(message) {
+  if (/not found|No such native application/i.test(message)) return "missing";
+  if (/forbidden/i.test(message)) return "forbidden";
+  return "";
+}
+
 function connect() {
   if (nativePort) return;
   try {
@@ -298,6 +306,7 @@ function connect() {
     nativePort = null;
     initSent = false;
     const why = err && err.message ? err.message : "The tailtab host stopped.";
+    hostProblem = hostProblemFrom(why);
     // Never offer a dead host's credential to whatever takes its port next.
     proxyToken = "";
     setStatus({
@@ -366,6 +375,7 @@ function onHostMessage(msg) {
   // Reset only after a host response. connectNative reports later through
   // onDisconnect, so resetting in connect() races and defeats backoff.
   reconnectDelay = RECONNECT_MIN_MS;
+  hostProblem = "";
   if (msg.event === "error") {
     status = Object.assign({}, status, { error: msg.error || "unknown error" });
     pushToPopups();
@@ -513,7 +523,7 @@ function updateIcon() {
 
 function pushToPopups() {
   updateIcon();
-  const payload = { status: status, proxyProblem: proxyProblem, browser: BROWSER, connected: !!nativePort, build: BUILD };
+  const payload = { status: status, proxyProblem: proxyProblem, browser: BROWSER, connected: !!nativePort, hostProblem: hostProblem, build: BUILD };
   for (const port of popups) {
     try {
       port.postMessage(payload);

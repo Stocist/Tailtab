@@ -32,7 +32,19 @@ const HINTS = {
   Stopped: "Disconnected. The node is logged in but not running.",
   NoState: "The node has not started yet.",
   InUseOtherUser: "Another user is signed in to this node.",
-  Disconnected: "The tailtab host is not running.",
+  Disconnected: "The Tailtab host is not running.",
+};
+
+const INSTALL_URL = "https://github.com/Stocist/Tailtab#install";
+
+const HOST_LABELS = {
+  missing: "Host not installed",
+  forbidden: "Host needs an update",
+};
+
+const HOST_HINTS = {
+  missing: "Tailtab needs its host app on this computer. Install it, then reopen this popup.",
+  forbidden: "The installed host does not accept this copy of Tailtab. Run the install command again, then reopen this popup.",
 };
 
 const LABELS = {
@@ -75,7 +87,7 @@ function setText(id, text) {
 function renderAccount(msg, st, running) {
   const accounts = Array.isArray(st.accounts) ? st.accounts : [];
   const active = accounts.find((a) => a.active);
-  let name = "tailtab";
+  let name = "Tailtab";
   let tailnet = "";
   if (switchingTo) {
     name = "Switching…";
@@ -184,7 +196,7 @@ function beginSwitch(target) {
     switchingTo = "";
     if (latest) {
       render(latest);
-      setText("hint", "The tailtab host did not confirm the change. Reload the extension and try again.");
+      setText("hint", "The Tailtab host did not confirm the change. Reload the extension and try again.");
     }
   }, SWITCH_TIMEOUT_MS);
 }
@@ -421,6 +433,8 @@ function render(msg) {
 
   // Do not pair a working login URL with its superseded error.
   const errorLine = st.authURL ? "" : st.error;
+  // Opening the popup retries the host, so the problem stands until the host answers.
+  const hostProblem = HOST_LABELS[msg.hostProblem] ? msg.hostProblem : "";
 
   renderAccount(msg, st, running);
 
@@ -430,7 +444,7 @@ function render(msg) {
     ? "Switching account…"
     : running
       ? runningStateLine(msg, st)
-      : LABELS[state] || state;
+      : HOST_LABELS[hostProblem] || LABELS[state] || state;
   pill.className = "pill " + pillKind(msg, st, running);
   setText(
     "hint",
@@ -438,7 +452,7 @@ function render(msg) {
       ? "Keeping the proxy off until the other account is up."
       : awaitingLogin
         ? "Requesting login link…"
-        : errorLine || HINTS[state] || ""
+        : HOST_HINTS[hostProblem] || errorLine || HINTS[state] || ""
   );
 
   const list = el("warnings");
@@ -474,6 +488,7 @@ function render(msg) {
   setText("port", st.proxyPort ? "local proxy\n127.0.0.1:" + st.proxyPort : "");
 
   el("login").hidden = !st.authURL;
+  el("install").hidden = !hostProblem;
   el("connect").hidden = running || !!st.authURL || !msg.connected;
   el("connect").disabled = awaitingLogin;
   el("connect").textContent = awaitingLogin ? "Requesting…" : "Connect";
@@ -488,15 +503,15 @@ function render(msg) {
     // Chromium can retain an older worker across browser restarts.
     warning.hidden = false;
     warning.className = "bad";
-    warning.textContent = "tailtab was updated. Reload the extension (edge://extensions or about:debugging) to finish.";
+    warning.textContent = "Tailtab was updated. Reload the extension (edge://extensions or about:debugging) to finish.";
   } else if (msg.proxyProblem) {
     warning.hidden = false;
     warning.className = "";
     warning.textContent = msg.proxyProblem;
-  } else if (!msg.connected) {
+  } else if (!msg.connected && !hostProblem) {
     warning.hidden = false;
     warning.className = "";
-    warning.textContent = "Not connected to the tailtab host. Reconnecting…";
+    warning.textContent = "Not connected to the Tailtab host. Reconnecting…";
   } else {
     warning.hidden = true;
     warning.textContent = "";
@@ -549,6 +564,11 @@ el("login").addEventListener("click", () => {
   if (url) openLogin(url);
 });
 
+el("install").addEventListener("click", () => {
+  api.tabs.create({ url: INSTALL_URL });
+  window.close();
+});
+
 el("connect").addEventListener("click", connect);
 el("settings").addEventListener("click", () => {
   if (api.runtime.openOptionsPage) api.runtime.openOptionsPage();
@@ -589,7 +609,7 @@ if (IS_GECKO && api.extension && api.extension.isAllowedIncognitoAccess) {
       if (warning.hidden) {
         warning.hidden = false;
         warning.textContent =
-          "Private windows are not covered: turn on “Run in Private Windows” for tailtab.";
+          "Private windows are not covered: turn on “Run in Private Windows” for Tailtab.";
       }
     })
     .catch(() => {});
