@@ -560,6 +560,71 @@ function openPopupUI() {
   };
 }
 
+for (const [browser, message, want] of [
+  ["Chromium", "Specified native messaging host not found.", "missing"],
+  ["Firefox", "No such native application com.stocist.tailtab", "missing"],
+  ["Chromium", "Access to the specified native messaging host is forbidden.", "forbidden"],
+  ["Chromium", "Native host has exited.", ""],
+]) {
+  test(`${browser} reporting "${message}" reaches the popup as host problem "${want}"`, async () => {
+    const env = makeEnv();
+    await flush();
+    env.ctx.chrome.runtime.lastError = { message: message };
+    env.disconnect();
+    env.ctx.chrome.runtime.lastError = null;
+    await flush();
+    env.popup("status");
+    await flush();
+    const last = env.popupMessages[env.popupMessages.length - 1];
+    eq(last.hostProblem, want, "host problem");
+  });
+}
+
+test("a host that answers clears the host problem", async () => {
+  const env = makeEnv();
+  await flush();
+  env.ctx.chrome.runtime.lastError = { message: "Specified native messaging host not found." };
+  env.disconnect();
+  env.ctx.chrome.runtime.lastError = null;
+  await flush();
+  env.runNextTimer();
+  env.status(RUNNING);
+  await flush();
+  env.popup("status");
+  await flush();
+  eq(env.popupMessages[env.popupMessages.length - 1].hostProblem, "", "host problem");
+});
+
+test("a missing host offers the install page instead of a reconnect notice", () => {
+  const ui = openPopupUI();
+  // The popup's own status request starts a retry, so the port exists again.
+  ui.push({
+    connected: true,
+    hostProblem: "missing",
+    status: { state: "Disconnected", error: "Specified native messaging host not found.", warnings: [] },
+  });
+
+  eq(ui.els.state.textContent, "Host not installed", "state pill");
+  eq(ui.els.hint.textContent, "Tailtab needs its host app on this computer. Install it, then reopen this popup.", "hint line");
+  if (ui.els.install.hidden) throw new Error("the install button is hidden");
+  if (!ui.els.warning.hidden) throw new Error("the reconnect notice is shown beside the install button");
+  ui.els.install.listeners.click();
+  eq(ui.opened, ["https://github.com/Stocist/Tailtab#install"], "opened pages");
+});
+
+test("a host that merely stopped keeps the reconnect notice and no install button", () => {
+  const ui = openPopupUI();
+  ui.push({
+    connected: false,
+    hostProblem: "",
+    status: { state: "Disconnected", error: "Native host has exited.", warnings: [] },
+  });
+
+  eq(ui.els.state.textContent, "Host not running", "state pill");
+  if (!ui.els.install.hidden) throw new Error("the install button is shown for a host that is installed");
+  if (ui.els.warning.hidden) throw new Error("the reconnect notice is hidden");
+});
+
 const LOGIN_ERROR = "You are logged out. The last login error was: all connection attempts failed";
 
 // A working auth URL supersedes its prior login error without hiding other warnings.
