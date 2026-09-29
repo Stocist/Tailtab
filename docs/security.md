@@ -24,7 +24,7 @@ While an exit node is selected *and online*, the guard flips to allow any public
 
 ## Extension permissions
 
-- `nativeMessaging`, `proxy`, `storage`, `tabs`, `alarms`: the host, the proxy configuration, the profile ID, opening the login tab, and the reconnect heartbeat.
+- `nativeMessaging`, `proxy`, `storage`, `alarms`: the host, the proxy configuration, the profile ID, and the reconnect heartbeat.
 - On Edge only: `webRequest`, `webRequestAuthProvider` and `host_permissions: <all_urls>`. `onAuthRequired` is the only way to answer a proxy's 407 in Manifest V3 and needs all three. The listener answers a challenge only when it comes from a proxy at `127.0.0.1` on the port this host is using, returns nothing for every other challenge, and never reads or modifies request content. Zen needs none of this because Firefox passes SOCKS credentials directly.
 
 ## What the popup opens

@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "tailtab",
+  "name": "Tailtab",
   "version": "0.1.0",
   "description": "Give this browser profile its own Tailscale node, without a system-wide VPN.",
   "browser_specific_settings": {
@@ -13,7 +13,7 @@
       }
     }
   },
-  "permissions": ["nativeMessaging", "proxy", "storage", "tabs", "alarms"],
+  "permissions": ["nativeMessaging", "proxy", "storage", "alarms"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "scripts": ["rules.js", "background.js"]
@@ -24,7 +24,7 @@
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "tailtab",
+    "default_title": "Tailtab",
     "default_icon": {
       "16": "icons/idle/icon16.png",
       "32": "icons/idle/icon32.png",
