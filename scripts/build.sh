@@ -27,7 +27,7 @@ else
 fi
 
 rm -rf "$dist"
-for target in chromium firefox; do
+for target in chromium firefox chromium-store firefox-listed; do
   out="$dist/$target"
   mkdir -p "$out/icons"
   for f in "${shared[@]}"; do
@@ -38,6 +38,10 @@ done
 
 sed -e "s/\"version\": \"[0-9.]*\"/\"version\": \"${ext_version}\"/" "$src/manifest.chromium.json" > "$dist/chromium/manifest.json"
 sed -e "s/\"version\": \"[0-9.]*\"/\"version\": \"${ext_version}\"/" "$src/manifest.firefox.json" > "$dist/firefox/manifest.json"
+# The Chrome Web Store refuses a key on first upload, and AMO refuses update_url on a listed add-on.
+sed -e '/"key":/d' "$dist/chromium/manifest.json" > "$dist/chromium-store/manifest.json"
+# AMO shares version numbers between the listed and self-hosted builds, so the listed one takes a fourth part.
+sed -e '/"update_url":/d' -e "s/\"version\": \"${ext_version}\"/\"version\": \"${ext_version}.1\"/" "$dist/firefox/manifest.json" > "$dist/firefox-listed/manifest.json"
 
-echo "built $dist/chromium and $dist/firefox"
+echo "built $dist/chromium and $dist/firefox, plus store packages in $dist/chromium-store and $dist/firefox-listed"
 echo "run ./scripts/test.sh to check the host and the extension"
