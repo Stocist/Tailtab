@@ -72,11 +72,12 @@ cat <<MSG
 
 Host installed. Now add the extension to your browser:
 
-  Zen / Firefox:  open $base/tailtab-<version>.xpi in the browser
-                  (signed by Mozilla; installs permanently and self-updates)
-  Edge / Chrome:  unzip $base/tailtab-chromium-<version>.zip and load it
-                  unpacked from edge://extensions or chrome://extensions
-                  with developer mode on
+  Edge / Chrome:  https://chromewebstore.google.com/detail/tailtab/imfnmecfhbbgjbfnkdplclbofbkmihdp
+                  (in Edge, allow extensions from other stores if asked)
+  Zen / Firefox:  https://addons.mozilla.org/firefox/addon/tailtab/
+
+Without a store, the release page has a Mozilla-signed xpi and an unpacked
+Chromium zip (edge://extensions or chrome://extensions, developer mode on).
 
 Release page: https://github.com/$repo/releases/latest
 MSG
