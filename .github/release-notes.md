@@ -29,9 +29,14 @@ Or build from source with `./scripts/build.sh`, which needs no quarantine step.
 
 **Host** (Windows): download `tailtab-windows-amd64.exe`, put it somewhere permanent such as `%LOCALAPPDATA%\tailtab\tailtab.exe`, and run the same `install` command from a terminal. It writes the manifests next to itself and registers them under `HKCU\Software\<browser>\NativeMessagingHosts`. Linux and Windows hosts pass the same end-to-end smoke test in CI as macOS; reports welcome.
 
-**Extension**:
+**Extension**, from the stores:
 
-- Zen / Firefox: install `tailtab-<version>.xpi` (signed by Mozilla for self-distribution) by opening it in the browser. It updates itself from later releases through `updates.json`. Or load `tailtab-firefox-<version>.zip` unpacked as a temporary add-on.
+- Edge / Chrome: [Chrome Web Store](https://chromewebstore.google.com/detail/tailtab/imfnmecfhbbgjbfnkdplclbofbkmihdp). In Edge, allow extensions from other stores if it asks.
+- Zen / Firefox: [Firefox Add-ons](https://addons.mozilla.org/firefox/addon/tailtab/).
+
+Or from this release:
+
+- Zen / Firefox: open `tailtab-<version>.xpi` (signed by Mozilla for self-distribution) in the browser. It updates itself from later releases through `updates.json`. Or load `tailtab-firefox-<version>.zip` unpacked as a temporary add-on.
 - Edge / Chrome: unzip `tailtab-chromium-<version>.zip` and load it unpacked from `edge://extensions` or `chrome://extensions` with developer mode on.
 
 `SHA256SUMS` lists every asset. See the README for first login and the docs for how routing, exit nodes and accounts behave.
