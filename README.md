@@ -9,6 +9,8 @@
 
 <p align="center">
   <a href="https://github.com/Stocist/Tailtab/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Stocist/Tailtab/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://chromewebstore.google.com/detail/tailtab/imfnmecfhbbgjbfnkdplclbofbkmihdp"><img alt="Chrome Web Store" src="https://img.shields.io/chrome-web-store/v/imfnmecfhbbgjbfnkdplclbofbkmihdp?label=Chrome%20Web%20Store&color=4285f4"></a>
+  <a href="https://addons.mozilla.org/firefox/addon/tailtab/"><img alt="Firefox Add-ons" src="https://img.shields.io/amo/v/tailtab?label=Firefox%20Add-ons&color=ff7139"></a>
   <a href="LICENSE"><img alt="License: BSD-3-Clause" src="https://img.shields.io/badge/license-BSD--3--Clause-8085b3"></a>
   <img alt="Go 1.27" src="https://img.shields.io/badge/go-1.27-00a378">
   <img alt="tailscale.com v1.102.3" src="https://img.shields.io/badge/tailscale.com-v1.102.3-00a378">
@@ -75,10 +77,12 @@ irm https://raw.githubusercontent.com/Stocist/Tailtab/main/scripts/install.ps1 |
 
 When upgrading on Windows, close all browsers that use Tailtab before rerunning the installer. It refuses to replace a running host rather than stopping your browser connections.
 
-Both download the [latest release](https://github.com/Stocist/Tailtab/releases/latest), verify it against `SHA256SUMS`, and run `tailtab install`. Set `TAILTAB_VERSION` to pin a release. Then add the extension:
+Both download the [latest release](https://github.com/Stocist/Tailtab/releases/latest), verify it against `SHA256SUMS`, and run `tailtab install`. Set `TAILTAB_VERSION` to pin a release. Then add the extension from the store:
 
-- **Zen / Firefox**: open `tailtab-<version>.xpi` from the release page in the browser. It is signed by Mozilla, installs permanently, and updates itself from later releases.
-- **Edge / Chrome**: unzip `tailtab-chromium-<version>.zip` and load it unpacked from `edge://extensions` or `chrome://extensions` with developer mode on.
+- **Edge / Chrome**: [Tailtab on the Chrome Web Store](https://chromewebstore.google.com/detail/tailtab/imfnmecfhbbgjbfnkdplclbofbkmihdp). In Edge, click **Allow extensions from other stores** first if it asks.
+- **Zen / Firefox**: [Tailtab on Firefox Add-ons](https://addons.mozilla.org/firefox/addon/tailtab/).
+
+If you would rather not use a store, every release also ships a Mozilla-signed `tailtab-<version>.xpi` that self-updates from GitHub, and a `tailtab-chromium-<version>.zip` to load unpacked from `edge://extensions` or `chrome://extensions` with developer mode on.
 
 The host binary is not notarised or code-signed yet, so macOS may need a right-click **Open** the first time and Windows may show a SmartScreen warning. Linux and Windows hosts pass the same end-to-end smoke test in CI as macOS but have had less real use; reports welcome.
 
@@ -171,8 +175,6 @@ There is a more complete write-up in [docs/security.md](docs/security.md), but t
 
 Tailtab is in beta. I daily drive it on macOS with Edge and Zen.
 
-It is not in an extension store yet, so setup is still manual.
-
 - [x] Per-profile node
 - [x] Split tunnelling
 - [x] Authenticated local proxy
@@ -185,8 +187,10 @@ It is not in an extension store yet, so setup is still manual.
 - [x] Linux host (smoke-tested end to end in CI)
 - [x] Windows host tested
 - [x] One-step install scripts
-- [ ] Proper Chrome testing
 - [x] Firefox host tested
+- [x] Chrome Web Store and Firefox Add-ons listings
+- [ ] Proper Chrome testing
+- [ ] Edge Add-ons listing
 
 Chrome should work with the existing implementation, but I have not properly tested it yet.
 
